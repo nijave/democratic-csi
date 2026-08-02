@@ -1028,7 +1028,13 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
     const execClient = this.getExecClient();
     const driver = this;
 
-    data = data.trim();
+    // targetcli's daemon mode (targetclid, enabled via the client-side
+    // auto_use_daemon preference) reads stdin line-by-line via Python's
+    // input(), which raises EOFError once the piped script ends without an
+    // explicit exit line, rather than treating EOF as an implicit exit the
+    // way non-daemon CLI mode does. Appending exit here makes the generated
+    // script compatible with both modes.
+    data = data.trim() + "\nexit";
 
     let command = "sh";
     let args = ["-c"];
