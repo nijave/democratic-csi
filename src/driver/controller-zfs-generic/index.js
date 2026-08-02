@@ -1028,7 +1028,8 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
     const execClient = this.getExecClient();
     const driver = this;
 
-    data = data.trim();
+    // append exit so the script works in both targetcli daemon and CLI modes
+    data = data.trim() + "\nexit";
 
     let command = "sh";
     let args = ["-c"];
