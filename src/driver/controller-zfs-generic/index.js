@@ -17,7 +17,6 @@ class ControllerZfsGenericDriver extends ControllerZfsBaseDriver {
   constructor(ctx, options) {
     super(...arguments);
 
-    this.targetCliMutex = new Mutex();
     this.nvmetCliMutex = new Mutex();
     this.spdkCliMutex = new Mutex();
     this.pcsMutex = new Mutex();
@@ -1075,19 +1074,18 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
       pty: true,
     };
 
-    return driver.targetCliMutex.runExclusive(async () => {
-      let response = await execClient.exec(
-        execClient.buildCommand(command, args),
-        options
-      );
-      driver.ctx.logger.verbose(
-        "TargetCLI response: " + JSON.stringify(response)
-      );
-      if (response.code != 0) {
-        throw response;
-      }
-      return response;
-    });
+    // no client-side mutex: targetcli-fb flocks /var/run/targetcli.lock NAS-side
+    let response = await execClient.exec(
+      execClient.buildCommand(command, args),
+      options
+    );
+    driver.ctx.logger.verbose(
+      "TargetCLI response: " + JSON.stringify(response)
+    );
+    if (response.code != 0) {
+      throw response;
+    }
+    return response;
   }
 
   async nvmetCliCommand(data) {
