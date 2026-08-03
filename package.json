@@ -3,6 +3,9 @@
   "version": "1.9.0",
   "description": "kubernetes csi driver framework",
   "main": "bin/democratic-csi",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "./bin/democratic-csi"
