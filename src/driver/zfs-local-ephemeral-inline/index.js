@@ -1,4 +1,5 @@
 const fs = require("fs");
+const _ = require("lodash");
 const { CsiBaseDriver } = require("../index");
 const { GrpcError, grpc } = require("../../utils/grpc");
 const { Filesystem } = require("../../utils/filesystem");

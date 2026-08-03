@@ -907,14 +907,8 @@ class Api {
 
     if (
       response.statusCode == 422 &&
-      JSON.stringify(response.body).includes("already exists")
-    ) {
-      return this.NvmetSubsysGetByName(subsysName);
-    }
-
-    if (
-      response.statusCode == 422 &&
-      JSON.stringify(response.body).includes("already used by subsystem")
+      (JSON.stringify(response.body).includes("already exists") ||
+        JSON.stringify(response.body).includes("already used by subsystem"))
     ) {
       //This device_path already used by subsystem: csi-pvc-111-clustera
       return this.NvmetNamespaceGetByDeivcePath(zvol);

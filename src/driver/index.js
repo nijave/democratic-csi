@@ -23,6 +23,122 @@ const NODE_OS_DRIVER_POSIX = "posix";
 const NODE_OS_DRIVER_WINDOWS = "windows";
 
 /**
+ * Validate a request-supplied volume_id.
+ *
+ * The allowed character set mirrors exactly what the create path
+ * (getVolumeIdFromCall) is permitted to generate: a case-insensitive
+ * [a-z0-9_-] allowlist, a maximum of 128 bytes (per the CSI spec), and a
+ * leading alphanumeric character (a zfs dataset requirement). Applying the
+ * same rules on RPCs that *consume* a volume_id (delete/expand/etc) prevents
+ * shell metacharacters and path separators from ever reaching a command
+ * string or a filesystem path, while never rejecting an id that create could
+ * legitimately have produced.
+ *
+ * Throws GrpcError(INVALID_ARGUMENT) on violation.
+ *
+ * @param {*} volume_id
+ * @returns {string} volume_id
+ */
+function validateVolumeId(volume_id) {
+  if (typeof volume_id !== "string" || volume_id.length < 1) {
+    throw new GrpcError(grpc.status.INVALID_ARGUMENT, `volume_id is required`);
+  }
+
+  if (volume_id.length > 128) {
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `volume_id '${volume_id}' is too large`
+    );
+  }
+
+  let invalid_chars = volume_id.match(/[^a-z0-9_\-]/gi);
+  if (invalid_chars) {
+    invalid_chars = String.prototype.concat(...new Set(invalid_chars.join("")));
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `volume_id '${volume_id}' contains invalid characters: '${invalid_chars}'`
+    );
+  }
+
+  if (!/^[a-z0-9]/i.test(volume_id)) {
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `volume_id '${volume_id}' must begin with alphanumeric character`
+    );
+  }
+
+  return volume_id;
+}
+
+/**
+ * Validate a request-supplied zfs snapshot_id.
+ *
+ * A zfs snapshot_id as produced by CreateSnapshot has one of two forms:
+ *  - attached:  <volume_id>@<snapshot_name>
+ *  - detached:  <volume_id>/<snapshot_name>
+ *
+ * where <volume_id> uses the [a-z0-9_-] allowlist and <snapshot_name>
+ * additionally permits ':', '.' and '+' (see CreateSnapshot's name
+ * validation). '@' and '/' are therefore the only legal separators. The
+ * allowlist blocks shell metacharacters, and the per-segment check blocks
+ * empty and '.'/'..' traversal segments while still accepting every id that
+ * create could legitimately have produced.
+ *
+ * NOTE: this is for zfs-style snapshot_ids only. The client-common drivers
+ * encode their snapshot_ids as a URL query string (see that driver), so they
+ * must NOT be run through this validator; they rely on the path-builder
+ * traversal guard instead.
+ *
+ * Throws GrpcError(INVALID_ARGUMENT) on violation.
+ *
+ * @param {*} snapshot_id
+ * @returns {string} snapshot_id
+ */
+function validateSnapshotId(snapshot_id) {
+  if (typeof snapshot_id !== "string" || snapshot_id.length < 1) {
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `snapshot_id is required`
+    );
+  }
+
+  if (snapshot_id.length > 255) {
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `snapshot_id '${snapshot_id}' is too large`
+    );
+  }
+
+  let invalid_chars = snapshot_id.match(/[^a-z0-9_\-:.+@\/]/gi);
+  if (invalid_chars) {
+    invalid_chars = String.prototype.concat(...new Set(invalid_chars.join("")));
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `snapshot_id '${snapshot_id}' contains invalid characters: '${invalid_chars}'`
+    );
+  }
+
+  // reject empty and '.'/'..' traversal segments across both separators
+  for (const segment of snapshot_id.split(/[@\/]/)) {
+    if (segment.length < 1 || segment === "." || segment === "..") {
+      throw new GrpcError(
+        grpc.status.INVALID_ARGUMENT,
+        `snapshot_id '${snapshot_id}' contains an invalid path segment`
+      );
+    }
+  }
+
+  if (!/^[a-z0-9]/i.test(snapshot_id)) {
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `snapshot_id '${snapshot_id}' must begin with alphanumeric character`
+    );
+  }
+
+  return snapshot_id;
+}
+
+/**
  * common code shared between all drivers
  * this is **NOT** meant to work as a proxy
  * for the grpc calls meaning, it should not
@@ -49,6 +165,21 @@ class CsiBaseDriver {
     if (!this.options.node.mount.hasOwnProperty("checkFilesystem")) {
       this.options.node.mount.checkFilesystem = {};
     }
+  }
+
+  /**
+   * Validate a request-supplied volume_id (see module-level validateVolumeId).
+   */
+  validateVolumeId(volume_id) {
+    return validateVolumeId(volume_id);
+  }
+
+  /**
+   * Validate a request-supplied zfs snapshot_id (see module-level
+   * validateSnapshotId).
+   */
+  validateSnapshotId(snapshot_id) {
+    return validateSnapshotId(snapshot_id);
   }
 
   /**
@@ -1029,6 +1160,7 @@ class CsiBaseDriver {
               );
 
               // TODO: allow a parameter to control this behavior in some form
+              // eslint-disable-next-line no-constant-condition
               if (false) {
                 throw new GrpcError(
                   grpc.status.UNKNOWN,
@@ -1261,6 +1393,7 @@ class CsiBaseDriver {
                 );
 
                 // TODO: allow a parameter to control this behavior in some form
+                // eslint-disable-next-line no-constant-condition
                 if (false) {
                   throw new GrpcError(
                     grpc.status.UNKNOWN,
@@ -3856,6 +3989,7 @@ class CsiBaseDriver {
 
           // let things settle
           // it appears the dm devices can take a second to figure things out
+          // eslint-disable-next-line no-constant-condition
           if (is_device_mapper || true) {
             await GeneralUtils.sleep(2000);
           }
@@ -4078,3 +4212,5 @@ class CsiBaseDriver {
 }
 
 module.exports.CsiBaseDriver = CsiBaseDriver;
+module.exports.validateVolumeId = validateVolumeId;
+module.exports.validateSnapshotId = validateSnapshotId;

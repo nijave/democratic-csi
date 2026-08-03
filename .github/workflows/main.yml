@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - shell: bash
         name: npm install
         run: |
@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - shell: pwsh
         name: npm install
         run: |
@@ -449,12 +449,12 @@ jobs:
             export GIT_BRANCH=${GITHUB_REF#refs/heads/}
           fi
           if [[ -n "${GIT_TAG}" ]]; then
-            echo "::set-output name=tag::${GIT_TAG}"
+            echo "tag=${GIT_TAG}" >> "$GITHUB_OUTPUT"
           elif [[ -n "${GIT_BRANCH}" ]]; then
             if [[ "${GIT_BRANCH}" == "master" ]]; then
-              echo "::set-output name=tag::latest"
+              echo "tag=latest" >> "$GITHUB_OUTPUT"
             else
-              echo "::set-output name=tag::${GIT_BRANCH}"
+              echo "tag=${GIT_BRANCH}" >> "$GITHUB_OUTPUT"
             fi
           else
             :
