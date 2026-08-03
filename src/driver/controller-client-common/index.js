@@ -250,11 +250,40 @@ class ControllerClientCommonDriver extends CsiBaseDriver {
     return this.getShareBasePath() + this.getSnapshotExtraPath();
   }
 
+  /**
+   * Defense-in-depth: reject any id that could escape the intended base
+   * directory before it is concatenated into a filesystem path. This is
+   * redundant with the per-RPC validators but guards any current/future
+   * caller of the path builders. Ids consumed here (volume_id, filecopy
+   * snapshot_id `<volume_id>-<name>`) never legitimately contain a path
+   * separator, NUL, or a '..' sequence.
+   *
+   * @param {*} id
+   */
+  assertSafeIdForPath(id) {
+    if (
+      typeof id !== "string" ||
+      id.length < 1 ||
+      id.includes("\0") ||
+      id.includes("/") ||
+      id.includes("\\") ||
+      id.includes("..")
+    ) {
+      throw new GrpcError(
+        grpc.status.INVALID_ARGUMENT,
+        `invalid id '${id}': contains illegal path characters`
+      );
+    }
+    return id;
+  }
+
   getShareVolumePath(volume_id) {
+    this.assertSafeIdForPath(volume_id);
     return this.getShareVolumeBasePath() + "/" + volume_id;
   }
 
   getShareSnapshotPath(snapshot_id) {
+    this.assertSafeIdForPath(snapshot_id);
     return this.getShareSnapshotBasePath() + "/" + snapshot_id;
   }
 
@@ -267,10 +296,12 @@ class ControllerClientCommonDriver extends CsiBaseDriver {
   }
 
   getControllerVolumePath(volume_id) {
+    this.assertSafeIdForPath(volume_id);
     return this.getControllerVolumeBasePath() + "/" + volume_id;
   }
 
   getControllerSnapshotPath(snapshot_id) {
+    this.assertSafeIdForPath(snapshot_id);
     return this.getControllerSnapshotBasePath() + "/" + snapshot_id;
   }
 
@@ -852,6 +883,8 @@ class ControllerClientCommonDriver extends CsiBaseDriver {
       );
     }
 
+    driver.validateVolumeId(volume_id);
+
     // deleteStrategy
     const delete_strategy = _.get(
       driver.options,
@@ -995,6 +1028,8 @@ class ControllerClientCommonDriver extends CsiBaseDriver {
         `snapshot source_volume_id is required`
       );
     }
+
+    driver.validateVolumeId(source_volume_id);
 
     if (!name) {
       throw new GrpcError(
@@ -1400,6 +1435,8 @@ class ControllerClientCommonDriver extends CsiBaseDriver {
     if (!volume_id) {
       throw new GrpcError(grpc.status.INVALID_ARGUMENT, `missing volume_id`);
     }
+
+    driver.validateVolumeId(volume_id);
 
     const capabilities = call.request.volume_capabilities;
     if (!capabilities || capabilities.length === 0) {
