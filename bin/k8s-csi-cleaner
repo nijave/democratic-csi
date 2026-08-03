@@ -107,8 +107,8 @@ async function main() {
     // V1PersistentVolumeList
     k8sApi.listPersistentVolume().then((res) => {
       //console.log(res);
-      //console.dir(res.body.items, { depth: null }); // `depth: null` ensures unlimited recursion
-      resolve(res.body.items);
+      //console.dir(res.items, { depth: null }); // `depth: null` ensures unlimited recursion
+      resolve(res.items);
     });
   });
   console.log(`${k8sVolumes.length} k8s PVs discovered`);
