@@ -147,6 +147,7 @@ class NodeManualDriver extends CsiBaseDriver {
           "SINGLE_NODE_MULTI_WRITER", // added in v1.5.0
           "SINGLE_NODE_READER_ONLY",
         ];
+        break;
       default:
         return {
           valid: false,
