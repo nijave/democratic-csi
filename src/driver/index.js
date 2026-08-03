@@ -396,8 +396,7 @@ class CsiBaseDriver {
     const kc = driver.getDefaultKubernetsConfigInstance();
     const k8sApi = kc.makeApiClient(k8s.CoreV1Api);
 
-    let res = await k8sApi.readNamespacedPersistentVolumeClaim(name, namespace);
-    return res.body;
+    return await k8sApi.readNamespacedPersistentVolumeClaim({ name, namespace });
   }
 
   getCsiProxyEnabled() {
@@ -483,22 +482,15 @@ class CsiBaseDriver {
           let pvs;
           let kcontinue;
           do {
-            pvs = await k8sApi.listPersistentVolume(
-              undefined,
-              undefined,
-              kcontinue,
-              undefined,
-              undefined,
-              undefined // limit
-            );
-            pv = pvs.body.items.find((item) => {
+            pvs = await k8sApi.listPersistentVolume({ _continue: kcontinue });
+            pv = pvs.items.find((item) => {
               return (
                 item.spec.csi.driver == driver &&
                 item.spec.csi.volumeHandle == volumeHandle
               );
             });
-            kcontinue = pvs.body.metadata._continue;
-          } while (!pv && pvs.body.metadata._continue);
+            kcontinue = pvs.metadata._continue;
+          } while (!pv && pvs.metadata._continue);
 
           return pv;
         }
