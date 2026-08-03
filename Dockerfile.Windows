@@ -33,7 +33,7 @@ RUN \
   del powershell.zip ; \
   New-Item -ItemType SymbolicLink -Path "powershell.exe" -Target "pwsh.exe"
 
-ENV NODE_VERSION 20.19.0
+ENV NODE_VERSION 22.23.2
 ENV NODE_ENV=production
 RUN Invoke-WebRequest $('https://nodejs.org/dist/v{0}/node-v{0}-win-x64.zip' -f $env:NODE_VERSION) -OutFile 'node.zip' -UseBasicParsing ; \
   Expand-Archive node.zip -DestinationPath C:\ ; \

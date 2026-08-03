@@ -18,8 +18,8 @@ Vagrant.configure("2") do |config|
     end
   
     config.vm.provision "shell", inline: <<-SHELL
-      # force version 20.x of nodejs
-      curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+      # force version 22.x of nodejs
+      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 
       sudo apt-get update -y
 
