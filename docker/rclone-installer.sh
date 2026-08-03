@@ -21,11 +21,11 @@ fi
 if [ "$PLATFORM" = "linux/amd64" ]; then
   export PLATFORM_ARCH="amd64"
 elif [ "$PLATFORM" = "linux/arm64" ]; then
-  export PLATFORM_ARCH="arm"
+  export PLATFORM_ARCH="arm64"
 elif [ "$PLATFORM" = "linux/arm/v7" ]; then
   export PLATFORM_ARCH="arm-v7"
 else
-  echo "unsupported/unknown restic PLATFORM ${PLATFORM}"
+  echo "unsupported/unknown rclone PLATFORM ${PLATFORM}"
   exit 0
 fi
 
