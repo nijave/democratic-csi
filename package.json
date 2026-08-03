@@ -5,7 +5,8 @@
   "main": "bin/democratic-csi",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "./bin/democratic-csi"
+    "start": "./bin/democratic-csi",
+    "lint": "eslint src bin/*"
   },
   "author": "Travis Glenn Hansen <travisghansen@yahoo.com>",
   "bugs": {

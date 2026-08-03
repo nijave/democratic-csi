@@ -1037,6 +1037,7 @@ class CsiBaseDriver {
               );
 
               // TODO: allow a parameter to control this behavior in some form
+              // eslint-disable-next-line no-constant-condition
               if (false) {
                 throw new GrpcError(
                   grpc.status.UNKNOWN,
@@ -1269,6 +1270,7 @@ class CsiBaseDriver {
                 );
 
                 // TODO: allow a parameter to control this behavior in some form
+                // eslint-disable-next-line no-constant-condition
                 if (false) {
                   throw new GrpcError(
                     grpc.status.UNKNOWN,
@@ -3864,6 +3866,7 @@ class CsiBaseDriver {
 
           // let things settle
           // it appears the dm devices can take a second to figure things out
+          // eslint-disable-next-line no-constant-condition
           if (is_device_mapper || true) {
             await GeneralUtils.sleep(2000);
           }

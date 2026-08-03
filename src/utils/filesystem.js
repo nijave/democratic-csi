@@ -52,12 +52,12 @@ class Filesystem {
     const device_path = await filesystem.realpath(device);
     const blockdevices = await filesystem.getAllBlockDevices();
 
-    return blockdevices.some(async (i) => {
+    for (const i of blockdevices) {
       if ((await filesystem.realpath(i.path)) == device_path) {
         return true;
       }
-      return false;
-    });
+    }
+    return false;
   }
 
   /**

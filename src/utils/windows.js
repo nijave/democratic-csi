@@ -730,7 +730,7 @@ class Windows {
   async GetVolumesByDiskNumber(diskNumber) {
     let command;
     command = `Get-Disk -Number ${diskNumber} | Get-Partition | Get-Volume | ConvertTo-Json`;
-    result = await this.ps.exec(command);
+    let result = await this.ps.exec(command);
     this.resultToArray(result);
 
     return result.parsed;
@@ -1128,29 +1128,6 @@ class Windows {
           storagepoolfriendlyname: storagePoolFriendlyName,
           friendlyname: friendlyName,
           virutaldiskfriendlyname: virutalDiskFriendlyName,
-        },
-      });
-      return result.parsed;
-    } catch (err) {
-      throw err;
-    }
-  }
-
-  async NewVirtualDiskCloneByUniqueId(
-    storagePoolFriendlyName,
-    uniqueId,
-    friendlyName
-  ) {
-    let command;
-    let result;
-
-    command = `New-VirtualDiskSnapshot -FriendlyName "$Env:friendlyname" -VirtualDiskUniqueId "$Env:uniqueid" -TargetStoragePoolName "$Env:storagepoolfriendlyname" | ConvertTo-Json`;
-    try {
-      result = await this.ps.exec(command, {
-        env: {
-          storagepoolfriendlyname: storagePoolFriendlyName,
-          friendlyname: friendlyName,
-          uniqueid: uniqueId,
         },
       });
       return result.parsed;

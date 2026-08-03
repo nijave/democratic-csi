@@ -95,7 +95,7 @@ function lockKeysFromRequest(call, serviceMethodName) {
 function getLargestNumber() {
   let number;
   for (let i = 0; i < arguments.length; i++) {
-    value = Number(arguments[i]);
+    let value = Number(arguments[i]);
     if (isNaN(value)) {
       continue;
     }

@@ -1,0 +1,6 @@
+node_modules
+csi_proto
+csi_proxy_proto
+docker
+ci
+contrib
