@@ -1,0 +1,29 @@
+{
+  "root": true,
+  "env": {
+    "node": true,
+    "es2022": true
+  },
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "script"
+  },
+  "extends": ["eslint:recommended"],
+  "rules": {
+    "no-unused-vars": "warn",
+    "no-empty": ["warn", { "allowEmptyCatch": true }],
+    "no-constant-condition": ["error", { "checkLoops": false }],
+    "no-undef": "warn",
+    "no-unreachable": "warn",
+    "no-fallthrough": "warn",
+    "no-case-declarations": "warn",
+    "no-useless-catch": "warn",
+    "no-useless-escape": "warn",
+    "no-prototype-builtins": "warn",
+    "no-extra-boolean-cast": "warn",
+    "no-inner-declarations": "warn",
+    "no-extra-semi": "warn",
+    "no-unused-labels": "warn",
+    "no-async-promise-executor": "warn"
+  }
+}

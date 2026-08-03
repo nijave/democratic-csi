@@ -299,6 +299,7 @@ async function requestHandlerProxy(call, callback, serviceMethodName) {
       callback(e);
     } else {
       // TODO: only show real error string in development mode
+      // eslint-disable-next-line no-constant-condition
       message = true ? message : "unknown error, please inspect service logs";
 
       callback({ code: grpc.status.INTERNAL, message });
@@ -462,7 +463,7 @@ const signalMapping = {
   31: "SIGUSR2",
 };
 
-[(`SIGINT`, `SIGUSR1`, `SIGUSR2`, `uncaughtException`, `SIGTERM`)].forEach(
+["SIGINT", "SIGUSR1", "SIGUSR2", "uncaughtException", "SIGTERM"].forEach(
   (eventType) => {
     process.on(eventType, async (code) => {
       let codeNumber = null;

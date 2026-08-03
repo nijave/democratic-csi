@@ -87,6 +87,7 @@ class SynologyHttpClient {
     this.apiSerializeMutex = new Mutex();
     this.registry = new Registry();
 
+    // eslint-disable-next-line no-constant-condition
     if (false) {
       setInterval(() => {
         console.log("WIPING OUT SYNOLOGY SID");

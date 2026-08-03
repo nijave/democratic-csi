@@ -224,7 +224,7 @@ class ControllerObjectiveFSDriver extends CsiBaseDriver {
       )
     ) {
       // TODO: let drivers fill ths in
-      volume_condition = { abnormal, message };
+      const volume_condition = { abnormal, message };
       volume_status.volume_condition = volume_condition;
     }
 
