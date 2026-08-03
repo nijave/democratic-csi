@@ -907,17 +907,25 @@ class Api {
 
     if (
       response.statusCode == 422 &&
-      JSON.stringify(response.body).includes("already exists")
-    ) {
-      return this.NvmetSubsysGetByName(subsysName);
-    }
-
-    if (
-      response.statusCode == 422 &&
-      JSON.stringify(response.body).includes("already used by subsystem")
+      (JSON.stringify(response.body).includes("already exists") ||
+        JSON.stringify(response.body).includes("already used by subsystem"))
     ) {
       //This device_path already used by subsystem: csi-pvc-111-clustera
-      return this.NvmetNamespaceGetByDeivcePath(zvol);
+      const namespace = await this.NvmetNamespaceGetByDeivcePath(zvol);
+      // lookup filters by device_path only; verify it belongs to the requested subsystem
+      const namespaceSubsysId = _.get(
+        namespace,
+        "subsys.id",
+        _.get(namespace, "subsys_id")
+      );
+      if (namespaceSubsysId != subsysId) {
+        throw new Error(
+          `namespace with device_path ${zvol} already exists but belongs to subsys_id ${namespaceSubsysId} (expected ${subsysId}): ${JSON.stringify(
+            namespace
+          )}`
+        );
+      }
+      return namespace;
     }
 
     throw new Error(JSON.stringify(response.body));
