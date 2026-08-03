@@ -55,15 +55,29 @@ class SshClient {
   }
 
   /**
-   * Build a command line from the name and given args
-   * TODO: escape the arguments
+   * Shell-escape a single argument by wrapping it in single quotes and
+   * safely terminating any embedded single quotes (the standard POSIX
+   * '\'' idiom). The result is a single shell word whose literal value is
+   * exactly `arg`, so no metacharacter it contains can be interpreted by the
+   * remote shell.
+   *
+   * @param {*} arg
+   */
+  shellEscapeArg(arg) {
+    return `'${String(arg).replace(/'/g, `'\\''`)}'`;
+  }
+
+  /**
+   * Build a command line from the name and given args, escaping every token
+   * so request-controlled values (dataset/snapshot names) cannot inject
+   * additional shell commands.
    *
    * @param {*} name
    * @param {*} args
    */
   buildCommand(name, args = []) {
     args.unshift(name);
-    return args.join(" ");
+    return args.map((arg) => this.shellEscapeArg(arg)).join(" ");
   }
 
   debug() {
