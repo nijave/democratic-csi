@@ -981,7 +981,10 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
     let cliCommand = [];
     cliCommand.push(cliArgs.join(" "));
     cliCommand.push(commandTerms.join(" "));
-    args.push("'" + cliCommand.join(" ") + "'");
+    // execClient.buildCommand() shell-escapes each arg itself (wrapping in
+    // single quotes), so this must be passed raw - wrapping it here too
+    // produces double-quoted, unexecutable output.
+    args.push(cliCommand.join(" "));
 
     let logCommandTmp = command + " " + args.join(" ");
     let logCommand = "";
@@ -1050,7 +1053,10 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
     cliCommand.push(`echo "${data}"`.trim());
     cliCommand.push("|");
     cliCommand.push(cliArgs.join(" "));
-    args.push("'" + cliCommand.join(" ") + "'");
+    // execClient.buildCommand() shell-escapes each arg itself (wrapping in
+    // single quotes), so this must be passed raw - wrapping it here too
+    // produces double-quoted, unexecutable output.
+    args.push(cliCommand.join(" "));
 
     let logCommandTmp = command + " " + args.join(" ");
     let logCommand = "";
@@ -1140,7 +1146,10 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
     cliCommand.push(`echo "${data}"`.trim());
     cliCommand.push("|");
     cliCommand.push(cliArgs.join(" "));
-    args.push("'" + cliCommand.join(" ") + "'");
+    // execClient.buildCommand() shell-escapes each arg itself (wrapping in
+    // single quotes), so this must be passed raw - wrapping it here too
+    // produces double-quoted, unexecutable output.
+    args.push(cliCommand.join(" "));
 
     let logCommandTmp = command + " " + args.join(" ");
     let logCommand = "";
@@ -1204,7 +1213,10 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
     cliCommand.push(`echo "${data}"`.trim());
     cliCommand.push("|");
     cliCommand.push(cliArgs.join(" "));
-    args.push("'" + cliCommand.join(" ") + "'");
+    // execClient.buildCommand() shell-escapes each arg itself (wrapping in
+    // single quotes), so this must be passed raw - wrapping it here too
+    // produces double-quoted, unexecutable output.
+    args.push(cliCommand.join(" "));
 
     let logCommandTmp = command + " " + args.join(" ");
     let logCommand = "";
