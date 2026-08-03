@@ -17,7 +17,6 @@ class ControllerZfsGenericDriver extends ControllerZfsBaseDriver {
   constructor(ctx, options) {
     super(...arguments);
 
-    this.targetCliMutex = new Mutex();
     this.nvmetCliMutex = new Mutex();
     this.spdkCliMutex = new Mutex();
     this.pcsMutex = new Mutex();
@@ -1084,19 +1083,23 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
       pty: true,
     };
 
-    return driver.targetCliMutex.runExclusive(async () => {
-      let response = await execClient.exec(
-        execClient.buildCommand(command, args),
-        options
-      );
-      driver.ctx.logger.verbose(
-        "TargetCLI response: " + JSON.stringify(response)
-      );
-      if (response.code != 0) {
-        throw response;
-      }
-      return response;
-    });
+    // No client-side mutex here: targetcli-fb already takes an exclusive
+    // flock() on /var/run/targetcli.lock for its entire CLI session, so
+    // concurrent invocations are already serialized NAS-side. Queueing them
+    // again here just adds client-side wait on top of that (each queued call
+    // would otherwise pay every earlier call's full round-trip before even
+    // starting), with no additional safety.
+    let response = await execClient.exec(
+      execClient.buildCommand(command, args),
+      options
+    );
+    driver.ctx.logger.verbose(
+      "TargetCLI response: " + JSON.stringify(response)
+    );
+    if (response.code != 0) {
+      throw response;
+    }
+    return response;
   }
 
   async nvmetCliCommand(data) {
