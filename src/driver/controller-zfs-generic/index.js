@@ -981,7 +981,8 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
     let cliCommand = [];
     cliCommand.push(cliArgs.join(" "));
     cliCommand.push(commandTerms.join(" "));
-    args.push("'" + cliCommand.join(" ") + "'");
+    // pass raw: execClient.buildCommand() shell-escapes each arg itself
+    args.push(cliCommand.join(" "));
 
     let logCommandTmp = command + " " + args.join(" ");
     let logCommand = "";
@@ -1045,7 +1046,8 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
     cliCommand.push(`echo "${data}"`.trim());
     cliCommand.push("|");
     cliCommand.push(cliArgs.join(" "));
-    args.push("'" + cliCommand.join(" ") + "'");
+    // pass raw: execClient.buildCommand() shell-escapes each arg itself
+    args.push(cliCommand.join(" "));
 
     let logCommandTmp = command + " " + args.join(" ");
     let logCommand = "";
@@ -1135,7 +1137,8 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
     cliCommand.push(`echo "${data}"`.trim());
     cliCommand.push("|");
     cliCommand.push(cliArgs.join(" "));
-    args.push("'" + cliCommand.join(" ") + "'");
+    // pass raw: execClient.buildCommand() shell-escapes each arg itself
+    args.push(cliCommand.join(" "));
 
     let logCommandTmp = command + " " + args.join(" ");
     let logCommand = "";
@@ -1199,7 +1202,8 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
     cliCommand.push(`echo "${data}"`.trim());
     cliCommand.push("|");
     cliCommand.push(cliArgs.join(" "));
-    args.push("'" + cliCommand.join(" ") + "'");
+    // pass raw: execClient.buildCommand() shell-escapes each arg itself
+    args.push(cliCommand.join(" "));
 
     let logCommandTmp = command + " " + args.join(" ");
     let logCommand = "";
