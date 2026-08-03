@@ -2461,9 +2461,10 @@ class FreeNASSshDriver extends ControllerZfsBaseDriver {
            * works on SCALE only ^
            *
            */
+          // pass the -c payload raw: buildCommand() shell-escapes each arg itself
           command = execClient.buildCommand("sh", [
             "-c",
-            `"echo 1 > /sys/kernel/scst_tgt/devices/${kName}/resync_size"`,
+            `echo 1 > /sys/kernel/scst_tgt/devices/${kName}/resync_size`,
           ]);
           reload = true;
         } else {

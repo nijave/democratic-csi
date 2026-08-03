@@ -930,6 +930,7 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
             volume_content_source.snapshot.snapshot_id;
           volume_content_source_snapshot_id =
             volume_content_source.snapshot.snapshot_id;
+          driver.validateSnapshotId(volume_content_source_snapshot_id);
 
           // zfs origin property contains parent info, ie: pool0/k8s/test/PVC-111@clone-test
           if (zb.helpers.isZfsSnapshot(volume_content_source_snapshot_id)) {
@@ -1050,6 +1051,7 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
             volume_content_source.volume.volume_id;
           volume_content_source_volume_id =
             volume_content_source.volume.volume_id;
+          driver.validateVolumeId(volume_content_source_volume_id);
 
           fullSnapshotName =
             datasetParentName +
@@ -1361,6 +1363,8 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
       );
     }
 
+    driver.validateVolumeId(name);
+
     const datasetName = datasetParentName + "/" + name;
     let properties;
 
@@ -1524,6 +1528,8 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
         `volume_id is required`
       );
     }
+
+    driver.validateVolumeId(name);
 
     const datasetName = datasetParentName + "/" + name;
 
@@ -1695,6 +1701,8 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
         `volume_id is required`
       );
     }
+
+    driver.validateVolumeId(name);
 
     const datasetName = datasetParentName + "/" + name;
 
@@ -1958,6 +1966,14 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
     let snapshot_id = call.request.snapshot_id;
     let source_volume_id = call.request.source_volume_id;
 
+    // both are optional filters; validate whichever was supplied
+    if (snapshot_id) {
+      driver.validateSnapshotId(snapshot_id);
+    }
+    if (source_volume_id) {
+      driver.validateVolumeId(source_volume_id);
+    }
+
     entries = [];
     for (let loopType of ["snapshot", "filesystem"]) {
       let response, operativeFilesystem, operativeFilesystemType;
@@ -2205,6 +2221,8 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
         `snapshot source_volume_id is required`
       );
     }
+
+    driver.validateVolumeId(source_volume_id);
 
     if (!name) {
       throw new GrpcError(
@@ -2486,6 +2504,8 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
       );
     }
 
+    driver.validateSnapshotId(snapshot_id);
+
     const detachedSnapshot = !zb.helpers.isZfsSnapshot(snapshot_id);
     let datasetParentName;
 
@@ -2553,6 +2573,8 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
     if (!volume_id) {
       throw new GrpcError(grpc.status.INVALID_ARGUMENT, `missing volume_id`);
     }
+
+    driver.validateVolumeId(volume_id);
 
     const capabilities = call.request.volume_capabilities;
     if (!capabilities || capabilities.length === 0) {

@@ -14,13 +14,103 @@ const { ISCSI } = require("../utils/iscsi");
 const { NVMEoF } = require("../utils/nvmeof");
 const semver = require("semver");
 const GeneralUtils = require("../utils/general");
-const { Zetabyte } = require("../utils/zfs");
+const { Zetabyte, shellEscapeArg } = require("../utils/zfs");
 
 const __REGISTRY_NS__ = "CsiBaseDriver";
 
 const NODE_OS_DRIVER_CSI_PROXY = "csi-proxy";
 const NODE_OS_DRIVER_POSIX = "posix";
 const NODE_OS_DRIVER_WINDOWS = "windows";
+
+/**
+ * Validate a request-supplied volume_id: [a-z0-9_-], <=128 bytes, leading
+ * alphanumeric (matches what the create path can generate).
+ *
+ * @param {*} volume_id
+ * @returns {string} volume_id
+ */
+function validateVolumeId(volume_id) {
+  if (typeof volume_id !== "string" || volume_id.length < 1) {
+    throw new GrpcError(grpc.status.INVALID_ARGUMENT, `volume_id is required`);
+  }
+
+  if (volume_id.length > 128) {
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `volume_id '${volume_id}' is too large`
+    );
+  }
+
+  let invalid_chars = volume_id.match(/[^a-z0-9_\-]/gi);
+  if (invalid_chars) {
+    invalid_chars = String.prototype.concat(...new Set(invalid_chars.join("")));
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `volume_id '${volume_id}' contains invalid characters: '${invalid_chars}'`
+    );
+  }
+
+  if (!/^[a-z0-9]/i.test(volume_id)) {
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `volume_id '${volume_id}' must begin with alphanumeric character`
+    );
+  }
+
+  return volume_id;
+}
+
+/**
+ * Validate a request-supplied zfs snapshot_id (<volume_id>@ or /<snapshot_name>).
+ * NOTE: zfs-style ids only; client-common drivers encode ids as a URL query
+ * string and must not use this validator.
+ *
+ * @param {*} snapshot_id
+ * @returns {string} snapshot_id
+ */
+function validateSnapshotId(snapshot_id) {
+  if (typeof snapshot_id !== "string" || snapshot_id.length < 1) {
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `snapshot_id is required`
+    );
+  }
+
+  if (snapshot_id.length > 255) {
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `snapshot_id '${snapshot_id}' is too large`
+    );
+  }
+
+  let invalid_chars = snapshot_id.match(/[^a-z0-9_\-:.+@\/]/gi);
+  if (invalid_chars) {
+    invalid_chars = String.prototype.concat(...new Set(invalid_chars.join("")));
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `snapshot_id '${snapshot_id}' contains invalid characters: '${invalid_chars}'`
+    );
+  }
+
+  // reject empty and '.'/'..' traversal segments across both separators
+  for (const segment of snapshot_id.split(/[@\/]/)) {
+    if (segment.length < 1 || segment === "." || segment === "..") {
+      throw new GrpcError(
+        grpc.status.INVALID_ARGUMENT,
+        `snapshot_id '${snapshot_id}' contains an invalid path segment`
+      );
+    }
+  }
+
+  if (!/^[a-z0-9]/i.test(snapshot_id)) {
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `snapshot_id '${snapshot_id}' must begin with alphanumeric character`
+    );
+  }
+
+  return snapshot_id;
+}
 
 /**
  * common code shared between all drivers
@@ -49,6 +139,21 @@ class CsiBaseDriver {
     if (!this.options.node.mount.hasOwnProperty("checkFilesystem")) {
       this.options.node.mount.checkFilesystem = {};
     }
+  }
+
+  /**
+   * Validate a request-supplied volume_id (see module-level validateVolumeId).
+   */
+  validateVolumeId(volume_id) {
+    return validateVolumeId(volume_id);
+  }
+
+  /**
+   * Validate a request-supplied zfs snapshot_id (see module-level
+   * validateSnapshotId).
+   */
+  validateSnapshotId(snapshot_id) {
+    return validateSnapshotId(snapshot_id);
   }
 
   /**
@@ -203,7 +308,11 @@ class CsiBaseDriver {
           //logger: driver.ctx.logger,
           executor: {
             spawn: function () {
-              const command = `${arguments[0]} ${arguments[1].join(" ")}`;
+              // shell-escape every token; cp.exec hands the joined string to a shell
+              const command = [arguments[0]]
+                .concat(arguments[1] || [])
+                .map((arg) => shellEscapeArg(arg))
+                .join(" ");
               return cp.exec(command);
             },
           },
@@ -4089,3 +4198,5 @@ class CsiBaseDriver {
 }
 
 module.exports.CsiBaseDriver = CsiBaseDriver;
+module.exports.validateVolumeId = validateVolumeId;
+module.exports.validateSnapshotId = validateSnapshotId;

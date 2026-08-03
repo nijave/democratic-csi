@@ -1,9 +1,12 @@
 const events = require("events");
 const cp = require("child_process");
 
-const escapeShell = function (cmd) {
-  cmd = String(cmd);
-  return '"' + cmd.replace(/(["$`\\])/g, "\\$1") + '"';
+/**
+ * Shell-escape a single argument (POSIX single-quote wrapping).
+ * @param {*} arg
+ */
+const shellEscapeArg = function (arg) {
+  return `'${String(arg).replace(/'/g, `'\\''`)}'`;
 };
 
 class Zetabyte {
@@ -296,8 +299,7 @@ class Zetabyte {
             }
           }
           if (options.fsProperties) {
-            for (let [key, value] of Object.entries(options.fsProperties)) {
-              value = escapeShell(value);
+            for (const [key, value] of Object.entries(options.fsProperties)) {
               args.push("-O");
               args.push(`${key}=${value}`);
             }
@@ -788,7 +790,6 @@ class Zetabyte {
        * @param {*} value
        */
       set: function (pool, property, value) {
-        value = escapeShell(value);
         return new Promise((resolve, reject) => {
           let args = [];
           args.push("set");
@@ -928,8 +929,7 @@ class Zetabyte {
           if (options.unmounted) args.push("-u");
           if (options.blocksize) args = args.concat(["-b", options.blocksize]);
           if (options.properties) {
-            for (let [key, value] of Object.entries(options.properties)) {
-              value = escapeShell(value);
+            for (const [key, value] of Object.entries(options.properties)) {
               args.push("-o");
               args.push(`${key}=${value}`);
             }
@@ -1028,16 +1028,19 @@ class Zetabyte {
           args.push("snapshot");
           if (options.recurse) args.push("-r");
           if (options.properties) {
-            for (let [key, value] of Object.entries(options.properties)) {
-              value = escapeShell(value);
+            for (const [key, value] of Object.entries(options.properties)) {
               args.push("-o");
               args.push(`${key}=${value}`);
             }
           }
           if (Array.isArray(dataset)) {
-            dataset = dataset.join(" ");
+            // keep each dataset as its own arg for per-arg shell-escaping
+            dataset.forEach((item) => {
+              args.push(item);
+            });
+          } else {
+            args.push(dataset);
           }
-          args.push(dataset);
 
           zb.exec(
             zb.options.paths.zfs,
@@ -1110,8 +1113,7 @@ class Zetabyte {
           args.push("clone");
           if (options.parents) args.push("-p");
           if (options.properties) {
-            for (let [key, value] of Object.entries(options.properties)) {
-              value = escapeShell(value);
+            for (const [key, value] of Object.entries(options.properties)) {
               args.push("-o");
               args.push(`${key}=${value}`);
             }
@@ -1156,8 +1158,8 @@ class Zetabyte {
             command = command.concat(zb.options.paths.sudo);
           }
           command = command.concat(["zfs", "send"]);
-          command = command.concat(send_options);
-          command.push(source);
+          command = command.concat(send_options.map(shellEscapeArg));
+          command.push(shellEscapeArg(source));
 
           command.push("|");
 
@@ -1165,10 +1167,11 @@ class Zetabyte {
             command = command.concat(zb.options.paths.sudo);
           }
           command = command.concat(["zfs", "receive"]);
-          command = command.concat(receive_options);
-          command.push(target);
+          command = command.concat(receive_options.map(shellEscapeArg));
+          command.push(shellEscapeArg(target));
 
-          args.push("'" + command.join(" ") + "'");
+          // pass the pipeline to `sh -c` as a single raw arg (executors escape per-arg)
+          args.push(command.join(" "));
 
           zb.exec(
             "/bin/sh",
@@ -1330,8 +1333,7 @@ class Zetabyte {
           args.push("set");
 
           if (properties) {
-            for (let [key, value] of Object.entries(properties)) {
-              value = escapeShell(value);
+            for (const [key, value] of Object.entries(properties)) {
               args.push(`${key}=${value}`);
             }
           }
@@ -1625,15 +1627,21 @@ class ZfsSshProcessManager {
   }
 
   /**
-   * Build a command line from the name and given args
-   * TODO: escape the arguments
-   *
+   * Shell-escape a single argument.
+   * @param {*} arg
+   */
+  shellEscapeArg(arg) {
+    return shellEscapeArg(arg);
+  }
+
+  /**
+   * Build a command line from name + args, shell-escaping every token.
    * @param {*} name
    * @param {*} args
    */
   buildCommand(name, args = []) {
     args.unshift(name);
-    return args.join(" ");
+    return args.map((arg) => shellEscapeArg(arg)).join(" ");
   }
 
   /**
@@ -1675,3 +1683,4 @@ class ZfsSshProcessManager {
   }
 }
 exports.ZfsSshProcessManager = ZfsSshProcessManager;
+exports.shellEscapeArg = shellEscapeArg;

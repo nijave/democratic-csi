@@ -1,4 +1,5 @@
 const cp = require("child_process");
+const { shellEscapeArg } = require("./zfs");
 
 class LocalCliExecClient {
   constructor(options = {}) {
@@ -11,15 +12,21 @@ class LocalCliExecClient {
   }
 
   /**
-   * Build a command line from the name and given args
-   * TODO: escape the arguments
-   *
+   * Shell-escape a single argument (POSIX single-quote wrapping).
+   * @param {*} arg
+   */
+  shellEscapeArg(arg) {
+    return shellEscapeArg(arg);
+  }
+
+  /**
+   * Build a command line from name + args, shell-escaping every token.
    * @param {*} name
    * @param {*} args
    */
   buildCommand(name, args = []) {
     args.unshift(name);
-    return args.join(" ");
+    return args.map((arg) => shellEscapeArg(arg)).join(" ");
   }
 
   debug() {
@@ -45,6 +52,8 @@ class LocalCliExecClient {
 
   /**
    * simple wrapper for logging
+   *
+   * Zetabyte passes tokens raw, so buildCommand must shell-escape here.
    */
   spawn() {
     const command = this.buildCommand(arguments[0], arguments[1]);
