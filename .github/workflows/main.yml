@@ -56,6 +56,9 @@ jobs:
           retention-days: 1
 
   csi-sanity-synology-dsm6:
+    # sanity/release jobs require self-hosted runners that only exist on
+    # the upstream repo; skip them on forks so they don't queue forever
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-npm-linux-amd64
     strategy:
@@ -86,6 +89,7 @@ jobs:
           SYNOLOGY_VOLUME: ${{ secrets.SANITY_SYNOLOGY_VOLUME }}
 
   csi-sanity-synology-dsm7:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-npm-linux-amd64
     strategy:
@@ -116,6 +120,7 @@ jobs:
           SYNOLOGY_VOLUME: ${{ secrets.SANITY_SYNOLOGY_VOLUME }}
 
   csi-sanity-truenas-scale-25_10:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-npm-linux-amd64
     strategy:
@@ -151,6 +156,7 @@ jobs:
 
   # ssh-based drivers
   csi-sanity-truenas-core-13_0:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-npm-linux-amd64
     strategy:
@@ -185,6 +191,7 @@ jobs:
 
   # ssh-based drivers
   csi-sanity-zfs-generic-targetcli:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-npm-linux-amd64
     strategy:
@@ -217,6 +224,7 @@ jobs:
           SERVER_PASSWORD: ${{ secrets.SANITY_ZFS_GENERIC_PASSWORD }}
 
   csi-sanity-zfs-generic-pcs:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-npm-linux-amd64
     strategy:
@@ -247,6 +255,7 @@ jobs:
 
   # client drivers
   csi-sanity-objectivefs:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-npm-linux-amd64
     strategy:
@@ -286,6 +295,7 @@ jobs:
 
   # client drivers
   csi-sanity-client:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-npm-linux-amd64
     strategy:
@@ -315,6 +325,7 @@ jobs:
           CSI_SANITY_SKIP: "should fail when requesting to create a snapshot with already existing name and different source volume ID|should fail when requesting to create a volume with already existing name and different capacity"
 
   csi-sanity-client-windows:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-npm-windows-amd64
     strategy:
@@ -344,6 +355,7 @@ jobs:
 
   # zfs-local drivers
   csi-sanity-zfs-local:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-npm-linux-amd64
     strategy:
@@ -371,6 +383,7 @@ jobs:
 
   # local-hostpath driver
   csi-sanity-local-hostpath:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-npm-linux-amd64
       - build-npm-windows-amd64
@@ -408,6 +421,7 @@ jobs:
           CSI_SANITY_SKIP: "should fail when requesting to create a snapshot with already existing name and different source volume ID|should fail when requesting to create a volume with already existing name and different capacity"
 
   csi-sanity-windows-node:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-npm-windows-amd64
     strategy:
@@ -461,6 +475,7 @@ jobs:
           fi
 
   build-docker-linux:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - determine-image-tag
       - csi-sanity-synology-dsm6
@@ -504,6 +519,7 @@ jobs:
           IMAGE_TAG: ${{needs.determine-image-tag.outputs.tag}}
 
   build-docker-windows:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - csi-sanity-synology-dsm6
       - csi-sanity-synology-dsm7
@@ -550,6 +566,7 @@ jobs:
           retention-days: 1
 
   push-docker-windows:
+    if: github.repository == 'democratic-csi/democratic-csi'
     needs:
       - build-docker-linux
       - build-docker-windows
