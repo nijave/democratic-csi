@@ -30,6 +30,20 @@ runcmd:
     echo "=== zpool status ==="; zpool status
     echo "=== zfs version ==="; zfs version || true
 
+    # zfsutils-linux's zvol udev rules are installed by cloud-init's `packages:`
+    # phase, which runs AFTER systemd-udevd has already started — so udev never
+    # loaded them and zvol device symlinks (/dev/zvol/...) were never created.
+    # Without them the zvol (block) matrix leg fails at NodeStageVolume when the
+    # driver realpath()s /dev/zvol/<asset>. Reload rules so later zvol uevents
+    # create the symlinks.
+    udevadm control --reload-rules 2>&1 || echo "WARN: udevadm control --reload-rules failed"
+    # Probe: confirm a freshly created zvol now gets a /dev/zvol symlink.
+    zfs create -V 1M tank/_zvol_symlink_probe
+    udevadm settle 2>&1 || true
+    echo "=== /dev/zvol probe ==="
+    ls -l /dev/zvol/tank/_zvol_symlink_probe || echo "PROBE: /dev/zvol symlink MISSING after reload"
+    zfs destroy -r tank/_zvol_symlink_probe 2>&1 || true
+
     # Node 22; run.sh expects /usr/local/lib/nodejs/bin on PATH
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
     apt-get install -y nodejs
