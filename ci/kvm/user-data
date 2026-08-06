@@ -1,0 +1,80 @@
+#cloud-config
+package_update: true
+packages:
+  # ZFS for the local tank zpool (Vagrantfile VM is a client; this VM is the host)
+  - zfsutils-linux
+  # Match the project Vagrantfile test-VM package set: the driver binary calls
+  # `nvme gen-hostnqn` (and other CLI tools) unconditionally at startup.
+  - netbase
+  - socat
+  - e2fsprogs
+  - xfsprogs
+  - fatresize
+  - dosfstools
+  - nfs-common
+  - cifs-utils
+  - open-iscsi
+  - lsscsi
+  - sg3-utils
+  - multipath-tools
+  - scsitools
+  - nvme-cli
+  - sudo
+runcmd:
+  - |
+    set -ex
+    # OpenZFS + a loopback-backed tank zpool
+    modprobe zfs
+    truncate -s 8G /tank.img
+    zpool create -f tank /tank.img
+    echo "=== zpool status ==="; zpool status
+    echo "=== zfs version ==="; zfs version || true
+
+    # zfsutils-linux's zvol udev rules are installed by cloud-init's `packages:`
+    # phase, which runs AFTER systemd-udevd has already started — so udev never
+    # loaded them and zvol device symlinks (/dev/zvol/...) were never created.
+    # Without them the zvol (block) matrix leg fails at NodeStageVolume when the
+    # driver realpath()s /dev/zvol/<asset>. Reload rules so later zvol uevents
+    # create the symlinks.
+    udevadm control --reload-rules 2>&1 || echo "WARN: udevadm control --reload-rules failed"
+    # Probe: confirm a freshly created zvol now gets a /dev/zvol symlink.
+    zfs create -V 1M tank/_zvol_symlink_probe
+    udevadm settle 2>&1 || true
+    echo "=== /dev/zvol probe ==="
+    ls -l /dev/zvol/tank/_zvol_symlink_probe || echo "PROBE: /dev/zvol symlink MISSING after reload"
+    zfs destroy -r tank/_zvol_symlink_probe 2>&1 || true
+
+    # Node 22; run.sh expects /usr/local/lib/nodejs/bin on PATH
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    apt-get install -y nodejs
+    mkdir -p /usr/local/lib/nodejs/bin
+    ln -sf "$(command -v node)" /usr/local/lib/nodejs/bin/node
+    ln -sf "$(command -v npm)" /usr/local/lib/nodejs/bin/npm
+    node --version
+
+    # Project shared from the runner over 9p
+    mkdir -p /project
+    mount -t 9p -o trans=virtio,version=9p2000.L,access=any project /project
+
+    # csi-sanity binary built on the runner lives in the share
+    install -m 0755 "/project/${CSI_SANITY_REL}" /usr/local/bin/csi-sanity
+    csi-sanity --help >/dev/null 2>&1 && echo "csi-sanity OK"
+
+    # Run the project's own sanity orchestration (driver + csi-sanity), unmodified
+    cd /project
+    export TEMPLATE_CONFIG_FILE="/project/${TEMPLATE_CONFIG_REL}"
+    export PATH="/usr/local/lib/nodejs/bin:${PATH}"
+    export CSI_SANITY_SKIP="${CSI_SANITY_SKIP}"
+    set +e
+    ci/bin/run.sh
+    STATUS=$?
+    set -e
+
+    # Sentinel for the runner; chmod so the non-root runner user can read it
+    echo "${STATUS}" > "/project/${CI_RESULT_REL}"
+    chmod 666 "/project/${CI_RESULT_REL}"
+    # Surface the full runcmd/driver/csi-sanity log to the runner for debugging
+    cp /var/log/cloud-init-output.log /project/.ci-vm-output.log 2>/dev/null || true
+    chmod 666 /project/.ci-vm-output.log 2>/dev/null || true
+    sync
+    poweroff

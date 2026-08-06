@@ -9,6 +9,7 @@ on:
     branches:
       - master
       - next
+  workflow_dispatch:
 
 jobs:
   cancel-previous-runs:
@@ -353,9 +354,8 @@ jobs:
           SHARE_NAME: tank_client_smb
           CSI_SANITY_SKIP: "should fail when requesting to create a snapshot with already existing name and different source volume ID|should fail when requesting to create a volume with already existing name and different capacity"
 
-  # zfs-local drivers
-  csi-sanity-zfs-local:
-    if: github.repository == 'democratic-csi/democratic-csi'
+  # zfs-local drivers (GitHub-hosted + nested KVM; no self-hosted runner needed)
+  csi-sanity-zfs-local-kvm:
     needs:
       - build-npm-linux-amd64
     strategy:
@@ -364,22 +364,50 @@ jobs:
         config:
           - zfs-local/zvol.yaml
           - zfs-local/dataset.yaml
-    runs-on:
-      - self-hosted
-      - Linux
-      - X64
-      - csi-sanity-zfs-local
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: node-modules-linux-amd64
-      - name: csi-sanity
+      - name: extract node_modules
+        run: tar -zxf node_modules-linux-amd64.tar.gz
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.1'
+      - name: build csi-sanity
         run: |
-          # run tests
-          ci/bin/run.sh
+          mkdir -p .ci-cache
+          if [[ ! -x .ci-cache/csi-sanity ]]; then
+            git clone --depth 1 --branch v5.5.0 https://github.com/kubernetes-csi/csi-test /tmp/csi-test
+            ( cd /tmp/csi-test/cmd/csi-sanity && make csi-sanity )
+            install -m 0755 /tmp/csi-test/cmd/csi-sanity/csi-sanity .ci-cache/csi-sanity
+          fi
+      - name: enable kvm + install qemu
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils wget
+          test -e /dev/kvm || { echo "KVM unavailable on this runner"; exit 1; }
+      - name: csi-sanity (KVM)
+        run: |
+          chmod +x ci/kvm/run-vm.sh
+          WORKSPACE="$GITHUB_WORKSPACE" \
+          TEMPLATE_CONFIG_REL="ci/configs/${{ matrix.config }}" \
+          CSI_SANITY_REL=".ci-cache/csi-sanity" \
+          CI_RESULT_REL=".ci-result" \
+          CI_SANITY_SKIP="${CSI_SANITY_SKIP}" \
+          ci/kvm/run-vm.sh
         env:
-          TEMPLATE_CONFIG_FILE: "./ci/configs/${{ matrix.config }}"
+          # zfs-local intentionally tolerates publishing a SINGLE_NODE_SINGLE_WRITER
+          # volume to multiple target paths on the same node: Kubernetes itself does
+          # this (one target_path per pod, bind-mounted from a shared staging path)
+          # and requires drivers to be lenient. csi-sanity's stricter test expects
+          # the 2nd publish to fail and does not clean up its mount, which cascades
+          # (csi-test #196), so skip that one spec.
+          CSI_SANITY_SKIP: "should fail when volume with single node single writer access mode is already mounted at a different target path"
 
   # local-hostpath driver
   csi-sanity-local-hostpath:
@@ -487,7 +515,7 @@ jobs:
       - csi-sanity-objectivefs
       - csi-sanity-client
       - csi-sanity-client-windows
-      - csi-sanity-zfs-local
+      - csi-sanity-zfs-local-kvm
       - csi-sanity-local-hostpath
       - csi-sanity-windows-node
     runs-on: ubuntu-latest
@@ -530,7 +558,7 @@ jobs:
       - csi-sanity-objectivefs
       - csi-sanity-client
       - csi-sanity-client-windows
-      - csi-sanity-zfs-local
+      - csi-sanity-zfs-local-kvm
       - csi-sanity-local-hostpath
       - csi-sanity-windows-node
     runs-on: ${{ matrix.os }}
