@@ -18,6 +18,33 @@ node:
         enabled: false
         customOptions: []
         customFilesystemOptions: []
+  # node-side iSCSI options
+  iscsi:
+    # opt-in backstop that reaps STALE iSCSI sessions, i.e. sessions whose
+    # backing target no longer exists (all attached devices offline /
+    # transport-offline because a prior DeleteVolume destroyed the zvol+target).
+    # open-iscsi does NOT self-reap: its replacement_timeout / noop timeouts only
+    # mark a broken session's devices offline and fail I/O; the session +
+    # node-DB record persist until an explicit logout (+ delete). This reconciler
+    # is a safety net for orphaned sessions that NodeUnstageVolume cannot clean
+    # (pre-existing orphans, or leaks from paths that never reach unstage).
+    #
+    # Detection is conservative: a session is reaped ONLY when it has at least
+    # one attached SCSI device AND every device is offline/transport-offline AND
+    # none of them are currently mounted / in use. Any running or mounted device
+    # leaves the session completely untouched. It is safe to run alongside
+    # NodeUnstageVolume (both tolerate "already gone").
+    sessionReaper:
+      # off by default; must be explicitly enabled
+      enabled: false
+      # how often (seconds) to scan for stale sessions
+      intervalSeconds: 300
+      # a candidate must be observed continuously stale for at least this many
+      # seconds before it is reaped (guards against transient recovery blips)
+      minStaleSeconds: 120
+      # delay (seconds) before the first scan after node startup
+      startupDelaySeconds: 60
+
   format:
     xfs:
       customOptions: []

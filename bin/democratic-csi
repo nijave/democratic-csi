@@ -177,6 +177,21 @@ try {
   process.exit(1);
 }
 
+// opt-in node-side backstop that reaps stale iSCSI sessions (off by default,
+// gated on node.iscsi.sessionReaper.enabled). node service only.
+if (args.csiMode.includes("node")) {
+  try {
+    if (typeof driver.startISCSISessionReaper === "function") {
+      driver.startISCSISessionReaper();
+    }
+  } catch (err) {
+    logger.error(
+      "failed starting iscsi session reaper: %s",
+      err && err.stack ? err.stack : String(err)
+    );
+  }
+}
+
 // TODO: consider alternatives that work 100% with replicas > 1
 // doing this in memory is crude and currently only works reliably with 1
 // replica per controller (due to potentional cross external-foo leaders,
