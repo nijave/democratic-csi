@@ -56,6 +56,24 @@ jobs:
           path: node_modules-windows-amd64.tar.gz
           retention-days: 1
 
+  # runs the repo's node:test unit suite under test/; intentionally NOT
+  # gated on github.repository so it also runs on forks
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - shell: bash
+        name: npm ci
+        run: |
+          npm ci
+      - shell: bash
+        name: npm test
+        run: |
+          npm test
+
   csi-sanity-synology-dsm6:
     # sanity/release jobs require self-hosted runners that only exist on
     # the upstream repo; skip them on forks so they don't queue forever
