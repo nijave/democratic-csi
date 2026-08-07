@@ -174,6 +174,32 @@ class ISCSI {
       },
 
       /**
+       * iscsiadm -m node -T <target> -p <portal>
+       * Whether a node DB record exists (an -o delete exit code cannot be
+       * trusted: it errors on an already-absent record).
+       */
+      async nodeDBEntryExists(tgtIQN, portal) {
+        let args = ["-m", "node", "-T", tgtIQN, "-p", portal];
+        try {
+          const result = await iscsi.exec(options.paths.iscsiadm, args);
+          return Boolean(result.stdout && result.stdout.trim().length > 0);
+        } catch (err) {
+          // 21 == ISCSI_ERR_NO_OBJS_FOUND ("iscsiadm: No records found")
+          if (err.code == 21) {
+            return false;
+          }
+          if (
+            String(err.stderr || "")
+              .toLowerCase()
+              .includes("no records found")
+          ) {
+            return false;
+          }
+          throw err;
+        }
+      },
+
+      /**
        * get session object by iqn/portal
        */
       async getSession(tgtIQN, portal) {
