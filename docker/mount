@@ -36,13 +36,10 @@ done
 if [[ ${USE_HOST_MOUNT_TOOLS} -eq 1 ]]; then
   for p in $(echo $P | cut -d ":" -f 1- --output-delimiter=" "); do
     if [[ -f "/host${p}/mount" ]]; then
-      chroot /host "${p}/mount" "${@:1}"
-      exit $?
+      exec chroot /host "${p}/mount" "${@:1}"
     fi
   done
-  chroot /host /usr/bin/env -i PATH="${P}" mount "${@:1}"
-  exit $?
+  exec chroot /host /usr/bin/env -i PATH="${P}" mount "${@:1}"
 else
-  /usr/bin/env -i PATH="${PL}" mount "${@:1}"
-  exit $?
+  exec /usr/bin/env -i PATH="${PL}" mount "${@:1}"
 fi
