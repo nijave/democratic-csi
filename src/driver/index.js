@@ -115,6 +115,262 @@ function validateSnapshotId(snapshot_id) {
   return snapshot_id;
 }
 
+const NOOP_LOGGER = { warn() {}, info() {}, debug() {}, error() {} };
+
+function findIscsiSessionForVolumeId(sessions, volumeId) {
+  if (!Array.isArray(sessions) || !volumeId) {
+    return [];
+  }
+  return sessions.filter(
+    (session) =>
+      session &&
+      typeof session.target === "string" &&
+      session.target.includes(volumeId)
+  );
+}
+
+// Success is verified by a follow-up state query, not the exit code (iscsiadm
+// errors on an already-absent session/record).
+async function logoutAndDeleteTarget(deps, target, portal) {
+  const { iscsiadm } = deps;
+  const logger = deps.logger || NOOP_LOGGER;
+  const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const recheckDelayMs =
+    deps.recheckDelayMs != null ? deps.recheckDelayMs : 250;
+
+  const describeErr = (err) =>
+    err && (err.message || err.stderr)
+      ? err.message || err.stderr
+      : JSON.stringify(err);
+
+  const runVerified = async (label, op, stillExists) => {
+    let opErr;
+    try {
+      await op();
+    } catch (err) {
+      opErr = err;
+    }
+
+    const checkExists = async () => {
+      try {
+        return await stillExists();
+      } catch (err) {
+        logger.warn(
+          `unable to query iscsi ${label} state for ${target} ${portal}: ${describeErr(
+            err
+          )}`
+        );
+        return true;
+      }
+    };
+
+    if (!(await checkExists())) {
+      return;
+    }
+
+    await sleep(recheckDelayMs);
+    if (!(await checkExists())) {
+      return;
+    }
+
+    if (opErr) {
+      logger.warn(
+        `iscsi ${label} of ${target} ${portal} did not clear state: ${describeErr(
+          opErr
+        )}`
+      );
+    } else {
+      logger.warn(
+        `iscsi ${label} of ${target} ${portal} returned success but state still persists`
+      );
+    }
+    throw new GrpcError(
+      grpc.status.UNKNOWN,
+      `iscsi ${label} for ${target} ${portal} still present; returning retryable error for the CO to retry`
+    );
+  };
+
+  await runVerified(
+    "logout",
+    () => iscsiadm.logout(target, [portal]),
+    async () => Boolean(await iscsiadm.getSession(target, portal))
+  );
+
+  await runVerified(
+    "node-DB delete",
+    () => iscsiadm.deleteNodeDBEntry(target, portal),
+    () => iscsiadm.nodeDBEntryExists(target, portal)
+  );
+}
+
+async function stagingDeviceIsDead(deps, stagingPath) {
+  const { mount, filesystem, readFile } = deps;
+  const logger = deps.logger || NOOP_LOGGER;
+
+  let device;
+  try {
+    device = await mount.getMountPointDevice(stagingPath);
+  } catch (e) {
+    return false;
+  }
+  if (!device) {
+    return false;
+  }
+
+  let exists = true;
+  try {
+    exists = await filesystem.pathExists(device);
+  } catch (e) {
+    exists = true;
+  }
+  if (!exists) {
+    logger.warn(`staging device ${device} missing, treating target as dead`);
+    return true;
+  }
+
+  try {
+    const real = await filesystem.realpath(device);
+    const name = real.split("/").pop();
+    let state_file = `/sys/block/${name}/device/state`;
+    if (!(await filesystem.pathExists(state_file))) {
+      const parent = await filesystem.getBlockDeviceParent(device);
+      if (parent && parent.name) {
+        state_file = `/sys/block/${parent.name}/device/state`;
+      }
+    }
+    if (await filesystem.pathExists(state_file)) {
+      const state = String(await readFile(state_file)).trim();
+      logger.info(`staging device ${device} scsi state: ${state}`);
+      if (["offline", "transport-offline"].includes(state)) {
+        return true;
+      }
+    }
+  } catch (e) {
+    // inconclusive
+  }
+
+  return false;
+}
+
+// True when iscsiadm cannot run on this host at all (open-iscsi not installed,
+// or the wrapper cannot reach the host binary/daemon), as opposed to an
+// operational failure of a working iscsiadm (timeout, lock contention, etc).
+function iscsiadmUnusable(err) {
+  if (!err || err.timeout) {
+    return false;
+  }
+  if (err.code === 127 || err.code === "ENOENT") {
+    return true;
+  }
+  if (err.error && err.error.code === "ENOENT") {
+    return true;
+  }
+  const text = `${err.stderr || ""} ${err.message || ""}`.toLowerCase();
+  return (
+    text.includes("not found") ||
+    text.includes("no such file or directory") ||
+    text.includes("failed to find iscsid pid")
+  );
+}
+
+// LIMITATION: "no match => success" holds only when the target IQN embeds
+// volume_id; otherwise the device fallback (or the reaper) reclaims it.
+// options.iscsiExpected (default true): when false, an unusable iscsiadm
+// (NFS/SMB-only node without open-iscsi) means "nothing to reclaim" rather
+// than a failed RPC.
+async function reclaimDeadIscsiSession(deps, volumeId, options = {}) {
+  const { iscsiadm } = deps;
+  const logger = deps.logger || NOOP_LOGGER;
+  const iscsiExpected = options.iscsiExpected !== false;
+
+  let sessions;
+  try {
+    sessions = await iscsiadm.getSessionsDetails();
+  } catch (e) {
+    if (!iscsiExpected && iscsiadmUnusable(e)) {
+      logger.warn(
+        `iscsiadm is unusable on this host and volume ${volumeId} shows no iscsi involvement, assuming no iscsi sessions to reclaim: ${
+          e.message || e.stderr || JSON.stringify(e)
+        }`
+      );
+      return { reclaimed: false, sessions: [] };
+    }
+    throw new GrpcError(
+      grpc.status.UNKNOWN,
+      `failed to enumerate iscsi sessions for volume ${volumeId}: ${
+        e.message || e
+      }`
+    );
+  }
+
+  const matches = findIscsiSessionForVolumeId(sessions, volumeId);
+  if (matches.length < 1) {
+    return { reclaimed: false, sessions: [] };
+  }
+
+  for (const session of matches) {
+    logger.info(
+      `reclaiming iscsi session for volume ${volumeId}: target=${session.target} portal=${session.persistent_portal}`
+    );
+    await logoutAndDeleteTarget(deps, session.target, session.persistent_portal);
+  }
+
+  let after;
+  try {
+    after = await iscsiadm.getSessionsDetails();
+  } catch (e) {
+    throw new GrpcError(
+      grpc.status.UNKNOWN,
+      `failed to re-enumerate iscsi sessions for volume ${volumeId}: ${
+        e.message || e
+      }`
+    );
+  }
+  const remaining = findIscsiSessionForVolumeId(after, volumeId);
+  if (remaining.length > 0) {
+    throw new GrpcError(
+      grpc.status.UNKNOWN,
+      `refusing NodeUnstageVolume success for ${volumeId}: ${remaining.length} iscsi session(s) still logged in after logout attempt`
+    );
+  }
+
+  for (const session of matches) {
+    let entryExists;
+    try {
+      entryExists = await iscsiadm.nodeDBEntryExists(
+        session.target,
+        session.persistent_portal
+      );
+    } catch (e) {
+      throw new GrpcError(
+        grpc.status.UNKNOWN,
+        `failed to verify iscsi node-DB entry for volume ${volumeId} (${session.target} ${session.persistent_portal}): ${
+          e.message || e
+        }`
+      );
+    }
+    if (entryExists) {
+      throw new GrpcError(
+        grpc.status.UNKNOWN,
+        `refusing NodeUnstageVolume success for ${volumeId}: node-DB entry ${session.target} ${session.persistent_portal} still present after delete attempt`
+      );
+    }
+  }
+
+  return { reclaimed: true, sessions: matches };
+}
+
+async function disconnectNvmeByNQN(deps, nqn) {
+  const { nvmeof } = deps;
+  await nvmeof.disconnectByNQN(nqn);
+  if (await nvmeof.getSubsystemByNQN(nqn)) {
+    throw new GrpcError(
+      grpc.status.UNKNOWN,
+      `nvme subsystem ${nqn} still connected after disconnect`
+    );
+  }
+}
+
 /**
  * common code shared between all drivers
  * this is **NOT** meant to work as a proxy
@@ -2702,6 +2958,15 @@ class CsiBaseDriver {
     let normalized_staging_path = staging_target_path;
     const umount_args = [];
     const umount_force_extra_args = ["--force", "--lazy"];
+    let device_confirmed_dead = false;
+    const iscsi_helper_deps = {
+      iscsiadm: iscsi.iscsiadm,
+      mount,
+      filesystem,
+      readFile: (p) => fs.readFileSync(p, "utf8"),
+      sleep: GeneralUtils.sleep,
+      logger: driver.ctx.logger,
+    };
 
     //result = await mount.pathIsMounted(block_path);
     //result = await mount.pathIsMounted(staging_target_path)
@@ -2749,11 +3014,40 @@ class CsiBaseDriver {
           }
         }
 
+        // only force-clear a confirmed-dead target; never a healthy busy mount
+        const handleUmountFailure = async (umount_err) => {
+          const dead = await stagingDeviceIsDead(
+            iscsi_helper_deps,
+            normalized_staging_path
+          );
+          if (!dead) {
+            throw umount_err;
+          }
+
+          driver.ctx.logger.warn(
+            `umount failed on a confirmed-dead target for volume ${volume_id}, forcing lazy unmount of stale mount: ${normalized_staging_path}`
+          );
+
+          try {
+            await mount.umount(
+              normalized_staging_path,
+              umount_args.concat(umount_force_extra_args)
+            );
+          } catch (e) {
+            driver.ctx.logger.warn(
+              `force umount of dead target failed (continuing to reclaim session): ${normalized_staging_path}`
+            );
+          }
+
+          device_confirmed_dead = true;
+        };
+
         result = await mount.pathIsMounted(normalized_staging_path);
         if (result) {
           try {
+            // small "busy" retry only; the CO drives real retries so we don't hold the lock
             result = await GeneralUtils.retry(
-              10,
+              3,
               0,
               async () => {
                 return await mount.umount(normalized_staging_path, umount_args);
@@ -2785,18 +3079,36 @@ class CsiBaseDriver {
                   );
                   break;
                 default:
-                  throw err;
+                  // dead iscsi target -> reclaim session, otherwise rethrow (retryable)
+                  await handleUmountFailure(err);
+                  break;
               }
             } else {
-              throw err;
+              // non-timeout umount failure (e.g. EIO on offline target): reclaim if dead, else rethrow
+              await handleUmountFailure(err);
             }
           }
         }
 
-        if (is_block) {
+        // iSCSI is "expected" only with evidence (dead target or an iscsi-attached
+        // device); otherwise a node without open-iscsi must not fail the RPC.
+        const iscsi_expected =
+          device_confirmed_dead ||
+          (is_block &&
+            Boolean(block_device_info) &&
+            block_device_info.tran == "iscsi");
+
+        const iscsi_reclaim = await reclaimDeadIscsiSession(
+          iscsi_helper_deps,
+          volume_id,
+          { iscsiExpected: iscsi_expected }
+        );
+
+        // device-based fallback for IQNs that don't embed volume_id, and nvme
+        const device_reclaimed_targets = [];
+        if (is_block && !iscsi_reclaim.reclaimed && !device_confirmed_dead) {
           let breakdeviceloop = false;
           let realBlockDeviceInfos = [];
-          // detect if is a multipath device
           is_device_mapper = await filesystem.isDeviceMapperDevice(
             block_device_info.path
           );
@@ -2859,59 +3171,18 @@ class CsiBaseDriver {
                       }
 
                       if (is_attached_to_session) {
-                        let timer_start;
-                        let timer_max;
-
-                        timer_start = Math.round(new Date().getTime() / 1000);
-                        timer_max = 30;
-                        let loggedOut = false;
-                        while (!loggedOut) {
-                          try {
-                            await iscsi.iscsiadm.logout(session.target, [
-                              session.persistent_portal,
-                            ]);
-                            loggedOut = true;
-                          } catch (err) {
-                            await GeneralUtils.sleep(2000);
-                            let current_time = Math.round(
-                              new Date().getTime() / 1000
-                            );
-                            if (current_time - timer_start > timer_max) {
-                              // not throwing error for now as future invocations would not enter code path anyhow
-                              loggedOut = true;
-                              //throw new GrpcError(
-                              //  grpc.status.UNKNOWN,
-                              //  `hit timeout trying to logout of iscsi target: ${session.persistent_portal}`
-                              //);
-                            }
-                          }
-                        }
-
-                        timer_start = Math.round(new Date().getTime() / 1000);
-                        timer_max = 30;
-                        let deletedEntry = false;
-                        while (!deletedEntry) {
-                          try {
-                            await iscsi.iscsiadm.deleteNodeDBEntry(
-                              session.target,
-                              session.persistent_portal
-                            );
-                            deletedEntry = true;
-                          } catch (err) {
-                            await GeneralUtils.sleep(2000);
-                            let current_time = Math.round(
-                              new Date().getTime() / 1000
-                            );
-                            if (current_time - timer_start > timer_max) {
-                              // not throwing error for now as future invocations would not enter code path anyhow
-                              deletedEntry = true;
-                              //throw new GrpcError(
-                              //  grpc.status.UNKNOWN,
-                              //  `hit timeout trying to delete iscsi node DB entry: ${session.target}, ${session.persistent_portal}`
-                              //);
-                            }
-                          }
-                        }
+                        driver.ctx.logger.info(
+                          `reclaiming iscsi session for volume ${volume_id} by device match: target=${session.target} portal=${session.persistent_portal}`
+                        );
+                        await logoutAndDeleteTarget(
+                          iscsi_helper_deps,
+                          session.target,
+                          session.persistent_portal
+                        );
+                        device_reclaimed_targets.push({
+                          target: session.target,
+                          portal: session.persistent_portal,
+                        });
                       }
                     }
                   }
@@ -2926,13 +3197,9 @@ class CsiBaseDriver {
                       block_device_info_i.name
                     );
                     if (nqn) {
-                      await nvmeof.disconnectByNQN(nqn);
-                      /**
-                       * the above disconnects *all* devices with the nqn so we
-                       * do NOT want to keep iterating all the 'real' devices
-                       * in the case of DM multipath
-                       */
+                      // disconnect handles all devices for the nqn, so stop iterating DM multipath slaves
                       breakdeviceloop = true;
+                      await disconnectNvmeByNQN({ nvmeof }, nqn);
                     }
                   }
                 }
@@ -2941,12 +3208,28 @@ class CsiBaseDriver {
           }
         }
 
+        for (const t of device_reclaimed_targets) {
+          if (await iscsi.iscsiadm.getSession(t.target, t.portal)) {
+            throw new GrpcError(
+              grpc.status.UNKNOWN,
+              `refusing NodeUnstageVolume success for ${volume_id}: iscsi session ${t.target} ${t.portal} still present after fallback logout`
+            );
+          }
+        }
+
+        if (await mount.pathIsMounted(normalized_staging_path)) {
+          throw new GrpcError(
+            grpc.status.UNKNOWN,
+            `refusing NodeUnstageVolume success for ${volume_id}: staging path still mounted: ${normalized_staging_path}`
+          );
+        }
+
         if (access_type == "block") {
           // remove touched file
           result = await filesystem.pathExists(block_path);
           if (result) {
             result = await GeneralUtils.retry(
-              30,
+              3,
               0,
               async () => {
                 return await filesystem.rm(block_path);
@@ -2966,7 +3249,7 @@ class CsiBaseDriver {
         result = await filesystem.pathExists(staging_target_path);
         if (result) {
           result = await GeneralUtils.retry(
-            30,
+            3,
             0,
             async () => {
               return await filesystem.rmdir(staging_target_path);
@@ -4244,3 +4527,9 @@ class CsiBaseDriver {
 module.exports.CsiBaseDriver = CsiBaseDriver;
 module.exports.validateVolumeId = validateVolumeId;
 module.exports.validateSnapshotId = validateSnapshotId;
+module.exports.findIscsiSessionForVolumeId = findIscsiSessionForVolumeId;
+module.exports.logoutAndDeleteTarget = logoutAndDeleteTarget;
+module.exports.stagingDeviceIsDead = stagingDeviceIsDead;
+module.exports.reclaimDeadIscsiSession = reclaimDeadIscsiSession;
+module.exports.iscsiadmUnusable = iscsiadmUnusable;
+module.exports.disconnectNvmeByNQN = disconnectNvmeByNQN;
