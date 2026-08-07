@@ -11,6 +11,9 @@ const { ObjectiveFS } = require("../utils/objectivefs");
 const { OneClient } = require("../utils/oneclient");
 const { Filesystem } = require("../utils/filesystem");
 const { ISCSI } = require("../utils/iscsi");
+const {
+  ISCSISessionReaper,
+} = require("../utils/iscsi-session-reaper");
 const { NVMEoF } = require("../utils/nvmeof");
 const semver = require("semver");
 const GeneralUtils = require("../utils/general");
@@ -276,6 +279,65 @@ class CsiBaseDriver {
         return new ISCSI();
       }
     );
+  }
+
+  /**
+   * Get the (lazily constructed) iSCSI stale-session reaper instance.
+   *
+   * @returns ISCSISessionReaper
+   */
+  getDefaultISCSISessionReaperInstance() {
+    const driver = this;
+    return this.ctx.registry.get(
+      `${__REGISTRY_NS__}:default_iscsi_session_reaper_instance`,
+      () => {
+        return new ISCSISessionReaper({
+          logger: driver.ctx.logger,
+          iscsi: driver.getDefaultISCSIInstance(),
+          mount: driver.getDefaultMountInstance(),
+          filesystem: driver.getDefaultFilesystemInstance(),
+          enabled: _.get(
+            driver.options,
+            "node.iscsi.sessionReaper.enabled",
+            false
+          ),
+          intervalSeconds: _.get(
+            driver.options,
+            "node.iscsi.sessionReaper.intervalSeconds",
+            300
+          ),
+          minStaleSeconds: _.get(
+            driver.options,
+            "node.iscsi.sessionReaper.minStaleSeconds",
+            120
+          ),
+          startupDelaySeconds: _.get(
+            driver.options,
+            "node.iscsi.sessionReaper.startupDelaySeconds",
+            60
+          ),
+        });
+      }
+    );
+  }
+
+  /**
+   * Start the opt-in iSCSI stale-session reaper (no-op unless
+   * node.iscsi.sessionReaper.enabled). Called from node service startup.
+   */
+  startISCSISessionReaper() {
+    const driver = this;
+    const enabled = _.get(
+      driver.options,
+      "node.iscsi.sessionReaper.enabled",
+      false
+    );
+    if (!enabled) {
+      return;
+    }
+    const reaper = driver.getDefaultISCSISessionReaperInstance();
+    reaper.start();
+    return reaper;
   }
 
   /**
