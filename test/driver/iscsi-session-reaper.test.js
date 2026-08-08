@@ -78,6 +78,21 @@ function nullLogger() {
   return { info: noop, warn: noop, error: noop, debug: noop };
 }
 
+// Records error() calls as util.format would render them, so tests assert on
+// the final "%s"-coerced string rather than the raw args.
+function spyLogger() {
+  const util = require("node:util");
+  const errors = [];
+  const record = (bucket) => (...args) => bucket.push(util.format(...args));
+  return {
+    errors,
+    info: () => {},
+    warn: () => {},
+    debug: () => {},
+    error: record(errors),
+  };
+}
+
 /**
  * reconcile() readDeviceState injection: resolve device state from a map,
  * returning null when absent so isSessionReapable falls back to the state
@@ -407,6 +422,94 @@ describe("reconcile - reaping behavior", () => {
     // third pass past the window: now reaped
     await reconcile(Object.assign({}, common, { now: 1200 }));
     assert.strictEqual(iscsi.calls.logout.length, 1);
+  });
+
+  it("logs the underlying error detail (not [object Object]) when session enumeration fails with an exec-rejection object", async () => {
+    const execRejection = {
+      code: 21,
+      stdout: "",
+      stderr: "iscsiadm: could not read session targets: connection refused",
+      timeout: false,
+    };
+    const iscsi = {
+      calls: { getSessionsDetails: 0, logout: [], delete: [] },
+      iscsiadm: {
+        async getSessionsDetails() {
+          throw execRejection;
+        },
+        async logout() {},
+        async deleteNodeDBEntry() {},
+      },
+    };
+    const logger = spyLogger();
+    const summary = await reconcile({
+      iscsi,
+      mount: fakeMount(),
+      logger,
+      config: { enabled: true, minStaleSeconds: 0 },
+      staleSince: new Map(),
+    });
+
+    // control flow is unchanged: catch-and-continue returns an empty summary
+    assert.deepStrictEqual(summary, {
+      candidates: [],
+      reaped: [],
+      failed: [],
+      skipped: [],
+    });
+
+    assert.strictEqual(logger.errors.length, 1);
+    const line = logger.errors[0];
+    assert.ok(
+      line.includes("failed to enumerate sessions"),
+      `expected the enumerate-failure message, got: ${line}`
+    );
+    assert.ok(
+      !line.includes("[object Object]"),
+      `error must not string-coerce the raw object, got: ${line}`
+    );
+    assert.ok(
+      line.includes("iscsiadm: could not read session targets"),
+      `expected the stderr detail to be surfaced, got: ${line}`
+    );
+    assert.ok(
+      line.includes("code=21"),
+      `expected the exit code to be surfaced, got: ${line}`
+    );
+  });
+
+  it("surfaces the stack/message when session enumeration fails with a real Error", async () => {
+    const boom = new Error("iscsid socket unavailable");
+    const iscsi = {
+      iscsiadm: {
+        async getSessionsDetails() {
+          throw boom;
+        },
+        async logout() {},
+        async deleteNodeDBEntry() {},
+      },
+    };
+    const logger = spyLogger();
+    await reconcile({
+      iscsi,
+      mount: fakeMount(),
+      logger,
+      config: { enabled: true, minStaleSeconds: 0 },
+      staleSince: new Map(),
+    });
+
+    assert.strictEqual(logger.errors.length, 1);
+    const line = logger.errors[0];
+    assert.ok(!line.includes("[object Object]"), line);
+    assert.ok(
+      line.includes("iscsid socket unavailable"),
+      `expected the Error message, got: ${line}`
+    );
+    // a real Error carries a stack; assert we logged it (frame reference)
+    assert.ok(
+      line.includes("iscsi-session-reaper") || line.includes("at "),
+      `expected the stack trace to be surfaced, got: ${line}`
+    );
   });
 
   it("resets the staleness timer if a candidate recovers", async () => {

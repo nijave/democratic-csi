@@ -41,6 +41,39 @@ const fs = require("fs");
 // is treated as potentially-alive and prevents the session from being reaped.
 const STALE_DEVICE_STATES = ["offline", "transport-offline"];
 
+// iscsiadm exec rejections are plain objects { code, stdout, stderr, timeout }
+// (see ISCSI.exec), not Errors, so they have no .stack and String()-coerce to
+// "[object Object]". Prefer a stack, else assemble the exec detail.
+function formatError(err) {
+  if (err && err.stack) {
+    return err.stack;
+  }
+  if (err && typeof err === "object") {
+    const parts = [];
+    if (err.code !== undefined && err.code !== null) {
+      parts.push(`code=${err.code}`);
+    }
+    if (err.timeout) {
+      parts.push("timeout=true");
+    }
+    if (err.stderr) {
+      parts.push(`stderr=${String(err.stderr).trim()}`);
+    }
+    if (err.stdout) {
+      parts.push(`stdout=${String(err.stdout).trim()}`);
+    }
+    if (parts.length > 0) {
+      return parts.join(" ");
+    }
+    try {
+      return JSON.stringify(err);
+    } catch (e) {
+      return String(err);
+    }
+  }
+  return String(err);
+}
+
 /**
  * Return the attached SCSI devices for a session as parsed by
  * iscsi.iscsiadm.getSessionsDetails().
@@ -215,7 +248,7 @@ async function reapSession({ iscsi, logger, iqn, portal }) {
       "iscsi session reaper: failed logout of session %s %s: %s",
       iqn,
       portal,
-      err && err.stack ? err.stack : String(err)
+      formatError(err)
     );
   }
 
@@ -232,7 +265,7 @@ async function reapSession({ iscsi, logger, iqn, portal }) {
       "iscsi session reaper: failed deleting node DB entry %s %s (may already be gone): %s",
       iqn,
       portal,
-      err && err.stack ? err.stack : String(err)
+      formatError(err)
     );
   }
 
@@ -289,7 +322,7 @@ async function reconcile({
   } catch (err) {
     logger.error(
       "iscsi session reaper: failed to enumerate sessions: %s",
-      err && err.stack ? err.stack : String(err)
+      formatError(err)
     );
     return summary;
   }
@@ -328,7 +361,7 @@ async function reconcile({
         "iscsi session reaper: failed evaluating session %s %s: %s",
         iqn,
         portal,
-        err && err.stack ? err.stack : String(err)
+        formatError(err)
       );
       continue;
     }
@@ -464,7 +497,7 @@ class ISCSISessionReaper {
         reaper.runOnce().catch((err) => {
           reaper.logger.error(
             "iscsi session reaper: unexpected error during pass: %s",
-            err && err.stack ? err.stack : String(err)
+            formatError(err)
           );
         });
       }, reaper.intervalSeconds * 1000);
@@ -479,7 +512,7 @@ class ISCSISessionReaper {
         .catch((err) => {
           reaper.logger.error(
             "iscsi session reaper: unexpected error during startup pass: %s",
-            err && err.stack ? err.stack : String(err)
+            formatError(err)
           );
         })
         .finally(() => {
@@ -544,4 +577,5 @@ module.exports.isSessionReapable = isSessionReapable;
 module.exports.reconcile = reconcile;
 module.exports.reapSession = reapSession;
 module.exports.readDeviceStateFromSysfs = readDeviceStateFromSysfs;
+module.exports.formatError = formatError;
 module.exports.STALE_DEVICE_STATES = STALE_DEVICE_STATES;
