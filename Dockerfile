@@ -114,7 +114,7 @@ COPY --from=build /usr/local/lib/nodejs/bin/node /usr/local/bin/node
 # netbase is required by rpcbind/rpcinfo to work properly
 # /etc/{services,rpc} are required
 RUN apt-get update && \
-  apt-get install -y wget netbase zip bzip2 socat e2fsprogs exfatprogs xfsprogs btrfs-progs fatresize dosfstools ntfs-3g nfs-common cifs-utils fdisk gdisk cloud-guest-utils sudo rsync procps util-linux nvme-cli fuse3 && \
+  apt-get install -y wget netbase zip bzip2 socat e2fsprogs exfatprogs xfsprogs btrfs-progs fatresize dosfstools ntfs-3g nfs-common cifs-utils fdisk gdisk cloud-guest-utils sudo rsync procps util-linux nvme-cli fuse3 tini && \
   rm -rf /var/lib/apt/lists/*
 
 RUN \
@@ -178,4 +178,8 @@ COPY --from=build --chown=csi:csi /home/csi/app /home/csi/app
 WORKDIR /home/csi/app
 
 EXPOSE 50051
-ENTRYPOINT [ "bin/democratic-csi" ]
+# node runs as PID 1 and reaps only children it spawns directly; an intermediate
+# that dies mid-command (e.g. sudo killed by a spawn timeout) orphans its
+# descendants to PID 1 as permanent zombies. tini -s is a subreaper that reaps
+# them, covering the sudo layer that the wrapper `exec`s cannot.
+ENTRYPOINT [ "/usr/bin/tini", "-s", "--", "bin/democratic-csi" ]
