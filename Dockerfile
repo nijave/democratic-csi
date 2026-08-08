@@ -60,10 +60,10 @@ RUN useradd --create-home csi \
 WORKDIR /home/csi/app
 USER csi
 
-# prevent need to build re2 module
-# https://github.com/uhop/install-artifact-from-github/wiki/Making-local-mirror
-ENV RE2_DOWNLOAD_MIRROR="https://grpc-uds-binaries.s3-us-west-2.amazonaws.com/re2"
-ENV RE2_DOWNLOAD_SKIP_PATH=1
+# re2: let install-artifact-from-github fetch the prebuilt binary from its
+# default source (GitHub releases). A custom S3 mirror was used here
+# previously but no longer publishes a build for current node ABIs, which
+# forced a source compile that fails (no toolchain in this stage).
 
 COPY --chown=csi:csi package*.json ./
 RUN npm install --only=production --grpc_node_binary_host_mirror=https://grpc-uds-binaries.s3-us-west-2.amazonaws.com/debian-buster
