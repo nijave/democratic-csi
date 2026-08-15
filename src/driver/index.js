@@ -20,7 +20,7 @@ const {
 const { NVMEoF } = require("../utils/nvmeof");
 const semver = require("semver");
 const GeneralUtils = require("../utils/general");
-const { Zetabyte } = require("../utils/zfs");
+const { Zetabyte, shellEscapeArg } = require("../utils/zfs");
 
 const __REGISTRY_NS__ = "CsiBaseDriver";
 
@@ -672,7 +672,12 @@ class CsiBaseDriver {
           //logger: driver.ctx.logger,
           executor: {
             spawn: function () {
-              const command = `${arguments[0]} ${arguments[1].join(" ")}`;
+              // shell-escape every token: volume_context values flow in here
+              // and cp.exec hands the string to a shell
+              const command = [arguments[0]]
+                .concat(arguments[1] || [])
+                .map((arg) => shellEscapeArg(arg))
+                .join(" ");
               return cp.exec(command);
             },
           },

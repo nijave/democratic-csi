@@ -1,4 +1,5 @@
 const cp = require("child_process");
+const { shellEscapeArg } = require("./zfs");
 
 class LocalCliExecClient {
   constructor(options = {}) {
@@ -11,15 +12,27 @@ class LocalCliExecClient {
   }
 
   /**
-   * Build a command line from the name and given args
-   * TODO: escape the arguments
+   * Shell-escape a single argument (single-quote wrapping with the POSIX
+   * '\'' idiom), so no metacharacter it contains can be interpreted by the
+   * local shell spawned by cp.exec.
+   *
+   * @param {*} arg
+   */
+  shellEscapeArg(arg) {
+    return shellEscapeArg(arg);
+  }
+
+  /**
+   * Build a command line from the name and given args, escaping every token
+   * so request/config-controlled values (dataset/snapshot names, property
+   * values) cannot inject additional commands into the local shell.
    *
    * @param {*} name
    * @param {*} args
    */
   buildCommand(name, args = []) {
     args.unshift(name);
-    return args.join(" ");
+    return args.map((arg) => shellEscapeArg(arg)).join(" ");
   }
 
   debug() {
