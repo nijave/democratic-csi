@@ -58,6 +58,12 @@ class LocalCliExecClient {
 
   /**
    * simple wrapper for logging
+   *
+   * This is the Zetabyte executor interface (zfs.js). Zetabyte passes every
+   * token raw (it no longer pre-escapes property values or the
+   * `zfs send | zfs receive` pipeline payload), so escaping must happen here
+   * before cp.exec hands the string to a shell - the same contract
+   * ZfsSshProcessManager.buildCommand provides over ssh.
    */
   spawn() {
     const command = this.buildCommand(arguments[0], arguments[1]);
