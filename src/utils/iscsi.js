@@ -1,6 +1,7 @@
 const cp = require("child_process");
 const { hostname_lookup, sleep } = require("./general");
 const net = require("net");
+const { Mutex } = require("async-mutex");
 
 function getIscsiValue(value) {
   if (value == "<empty>") return null;
@@ -8,6 +9,19 @@ function getIscsiValue(value) {
 }
 
 const DEFAULT_TIMEOUT = process.env.ISCSI_DEFAULT_TIMEOUT || 30000;
+
+// open-iscsi serializes *every* node-DB operation (reads included) behind a
+// single exclusive fcntl lock, and waiters poll with a bounded retry budget
+// (~30s). Concurrent NodeStage/NodeUnstage handlers each spawn several
+// iscsiadm invocations, so a burst of volumes (e.g. nightly volsync waves)
+// turns that lock into a convoy: waiters burn their lock budget, hit the
+// driver's exec timeout, and the failed RPCs are retried by kubelet while
+// the queue is still draining. Serialize our own invocations FIFO so each
+// op runs uncontended; open-iscsi still serializes against external
+// holders (host iscsid), but this process no longer multiplies the
+// contention. Module-level: all ISCSI instances in the process (driver
+// and session reaper) share one queue.
+const iscsiadmExecMutex = new Mutex();
 
 class ISCSI {
   constructor(options = {}) {
@@ -663,37 +677,55 @@ class ISCSI {
       cleansedArgs[argIndex + 2] = "redacted";
     }
 
-    const cleansedLog = `${command} ${cleansedArgs.join(" ")}`;
-    console.log("executing iscsi command: %s", cleansedLog);
+    return iscsiadmExecMutex.runExclusive(() => {
+      // log at actual execution, not enqueue, so log timestamps reflect
+      // when the command really ran
+      const cleansedLog = `${command} ${cleansedArgs.join(" ")}`;
+      console.log("executing iscsi command: %s", cleansedLog);
 
-    return new Promise((resolve, reject) => {
-      const child = iscsi.options.executor.spawn(command, args, options);
+      return new Promise((resolve, reject) => {
+        const child = iscsi.options.executor.spawn(command, args, options);
 
-      let stdout = "";
-      let stderr = "";
+        let stdout = "";
+        let stderr = "";
 
-      child.stdout.on("data", function (data) {
-        stdout = stdout + data;
-      });
+        child.stdout.on("data", function (data) {
+          stdout = stdout + data;
+        });
 
-      child.stderr.on("data", function (data) {
-        stderr = stderr + data;
-      });
+        child.stderr.on("data", function (data) {
+          stderr = stderr + data;
+        });
 
-      child.on("close", function (code) {
-        const result = { code, stdout, stderr, timeout: false };
-
-        // timeout scenario
-        if (code === null) {
-          result.timeout = true;
+        // spawn failures (ENOENT etc.) do not always emit close; without
+        // this the promise never settles and would wedge every subsequent
+        // iscsiadm behind the mutex
+        child.on("error", function (err) {
+          const result = {
+            code: null,
+            stdout,
+            stderr: String(err),
+            timeout: false,
+            error: err,
+          };
           reject(result);
-        }
+        });
 
-        if (code) {
-          reject(result);
-        } else {
-          resolve(result);
-        }
+        child.on("close", function (code) {
+          const result = { code, stdout, stderr, timeout: false };
+
+          // timeout scenario
+          if (code === null) {
+            result.timeout = true;
+            reject(result);
+          }
+
+          if (code) {
+            reject(result);
+          } else {
+            resolve(result);
+          }
+        });
       });
     });
   }
