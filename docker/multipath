@@ -2,12 +2,12 @@
 
 P="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin"
 
+# exec so multipath runs in the pid the caller tracks; without it a killed
+# wrapper orphans multipath to PID 1 (node reaps only what it spawns) -> zombie.
 for p in $(echo $P | cut -d ":" -f 1- --output-delimiter=" "); do
   if [[ -f "/host${p}/multipath" ]]; then
-    chroot /host "${p}/multipath" "${@:1}"
-    exit $?
+    exec chroot /host "${p}/multipath" "${@:1}"
   fi
 done
 
-chroot /host /usr/bin/env -i PATH="${P}" multipath "${@:1}"
-echo $?
+exec chroot /host /usr/bin/env -i PATH="${P}" multipath "${@:1}"
