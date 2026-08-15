@@ -13,9 +13,9 @@
     "no-unused-vars": "warn",
     "no-empty": ["warn", { "allowEmptyCatch": true }],
     "no-constant-condition": ["error", { "checkLoops": false }],
-    "no-undef": "warn",
-    "no-unreachable": "warn",
-    "no-fallthrough": "warn",
+    "no-undef": "error",
+    "no-unreachable": "error",
+    "no-fallthrough": ["error", { "allowEmptyCase": true }],
     "no-case-declarations": "warn",
     "no-useless-catch": "warn",
     "no-useless-escape": "warn",
@@ -24,6 +24,6 @@
     "no-inner-declarations": "warn",
     "no-extra-semi": "warn",
     "no-unused-labels": "warn",
-    "no-async-promise-executor": "warn"
+    "no-async-promise-executor": "error"
   }
 }
