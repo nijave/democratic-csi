@@ -4,7 +4,7 @@
   "description": "kubernetes csi driver framework",
   "main": "bin/democratic-csi",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "test": "node --test 'test/**/*.test.js'",
