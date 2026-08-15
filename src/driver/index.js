@@ -14,6 +14,9 @@ const { ISCSI } = require("../utils/iscsi");
 const {
   ISCSISessionReaper,
 } = require("../utils/iscsi-session-reaper");
+const {
+  ISCSINodeDbSweeper,
+} = require("../utils/iscsi-node-db-sweeper");
 const { NVMEoF } = require("../utils/nvmeof");
 const semver = require("semver");
 const GeneralUtils = require("../utils/general");
@@ -589,6 +592,54 @@ class CsiBaseDriver {
     const reaper = driver.getDefaultISCSISessionReaperInstance();
     reaper.start();
     return reaper;
+  }
+
+  /**
+   * Get the (lazily constructed) iSCSI node-DB orphan sweeper instance.
+   *
+   * @returns ISCSINodeDbSweeper
+   */
+  getDefaultISCSINodeDbSweeperInstance() {
+    const driver = this;
+    return this.ctx.registry.get(
+      `${__REGISTRY_NS__}:default_iscsi_node_db_sweeper_instance`,
+      () => {
+        return new ISCSINodeDbSweeper({
+          logger: driver.ctx.logger,
+          iscsi: driver.getDefaultISCSIInstance(),
+          startupDelaySeconds: _.get(
+            driver.options,
+            "node.iscsi.nodeDbSweeper.startupDelaySeconds",
+            60
+          ),
+          targetBasename: _.get(
+            driver.options,
+            "node.iscsi.nodeDbSweeper.targetBasename",
+            null
+          ),
+        });
+      }
+    );
+  }
+
+  /**
+   * Start the opt-in iSCSI node-DB orphan sweeper. No-op unless
+   * node.iscsi.nodeDbSweeper.enabled is true. Called from the node service
+   * startup (bin/democratic-csi) so it only runs in csi-mode=node.
+   */
+  startISCSINodeDbSweeper() {
+    const driver = this;
+    const enabled = _.get(
+      driver.options,
+      "node.iscsi.nodeDbSweeper.enabled",
+      false
+    );
+    if (!enabled) {
+      return;
+    }
+    const sweeper = driver.getDefaultISCSINodeDbSweeperInstance();
+    sweeper.start();
+    return sweeper;
   }
 
   /**

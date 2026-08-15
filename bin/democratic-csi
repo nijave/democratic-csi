@@ -190,6 +190,20 @@ if (args.csiMode.includes("node")) {
       err && err.stack ? err.stack : String(err)
     );
   }
+
+  // opt-in node-side startup sweep that deletes node-DB records with no
+  // active session (off by default, gated on node.iscsi.nodeDbSweeper.
+  // enabled). node service only.
+  try {
+    if (typeof driver.startISCSINodeDbSweeper === "function") {
+      driver.startISCSINodeDbSweeper();
+    }
+  } catch (err) {
+    logger.error(
+      "failed starting iscsi node-db sweeper: %s",
+      err && err.stack ? err.stack : String(err)
+    );
+  }
 }
 
 // TODO: consider alternatives that work 100% with replicas > 1

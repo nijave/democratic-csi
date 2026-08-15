@@ -200,6 +200,50 @@ class ISCSI {
       },
 
       /**
+       * iscsiadm -m node
+       * All node-DB records, one per line: `<portal>,<tpgt> <target-iqn>`.
+       * Exit 21 (no records) yields an empty list.
+       */
+      async listNodeDBEntries() {
+        let args = [];
+        args = args.concat(["-m", "node"]);
+        let result;
+        try {
+          result = await iscsi.exec(options.paths.iscsiadm, args);
+        } catch (err) {
+          // no records found
+          if (err.code == 21) {
+            result = err;
+          } else {
+            throw err;
+          }
+        }
+
+        // return empty list if no stdout data
+        if (!result.stdout) {
+          return [];
+        }
+
+        const entries = result.stdout.trim().split("\n");
+        const records = [];
+        entries.forEach((entry) => {
+          if (!entry) {
+            return;
+          }
+          const fields = entry.split(" ");
+          if (fields.length < 2) {
+            return;
+          }
+          records.push({
+            portal: fields[0],
+            iqn: fields[1],
+          });
+        });
+
+        return records;
+      },
+
+      /**
        * get session object by iqn/portal
        */
       async getSession(tgtIQN, portal) {
