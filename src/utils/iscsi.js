@@ -631,7 +631,7 @@ class ISCSI {
     return `/dev/disk/by-path/ip-${portalHost}:${parsedPortal.port}-iscsi-${iqn}-lun-${lun}`;
   }
 
-  exec(command, args, options = {}) {
+  async exec(command, args, options = {}) {
     if (!options.hasOwnProperty("timeout")) {
       options.timeout = DEFAULT_TIMEOUT;
     }
@@ -667,12 +667,46 @@ class ISCSI {
       cleansedArgs[argIndex + 2] = "redacted";
     }
 
-    return iscsiadmExecMutex.runExclusive(() => {
-      // log at actual execution, not enqueue, so log timestamps reflect
-      // when the command really ran
-      const cleansedLog = `${command} ${cleansedArgs.join(" ")}`;
-      console.log("executing iscsi command: %s", cleansedLog);
+    const cleansedLog = `${command} ${cleansedArgs.join(" ")}`;
 
+    // iscsiadm commands in the stage/unstage sequence are idempotent, so retry
+    // a bounded number of times on timeout before failing the RPC
+    const maxAttempts =
+      1 +
+      Math.max(
+        0,
+        parseInt(process.env.ISCSIADM_TIMEOUT_RETRIES || "1", 10) || 0
+      );
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await iscsiadmExecMutex.runExclusive(() => {
+          // log at execution (not enqueue) so timestamps reflect the real run
+          console.log(
+            "executing iscsi command: %s%s",
+            cleansedLog,
+            attempt > 1 ? ` (attempt ${attempt}/${maxAttempts})` : ""
+          );
+
+          return spawnOnce();
+        });
+      } catch (err) {
+        if (!err || !err.timeout || attempt === maxAttempts) {
+          throw err;
+        }
+        console.error(
+          "iscsi command timed out (attempt %d/%d), retrying: %s",
+          attempt,
+          maxAttempts,
+          cleansedLog
+        );
+        await sleep(250);
+      }
+    }
+
+    throw new Error("unreachable: iscsi exec retry loop exhausted");
+
+    function spawnOnce() {
       return new Promise((resolve, reject) => {
         const child = iscsi.options.executor.spawn(command, args, options);
 
@@ -715,7 +749,7 @@ class ISCSI {
           }
         });
       });
-    });
+    }
   }
 }
 
