@@ -282,16 +282,60 @@ async function stagingDeviceIsDead(deps, stagingPath) {
   return false;
 }
 
+// "iscsiadm cannot run on this host at all" (open-iscsi not installed, or the
+// docker/iscsiadm wrapper cannot reach the host binary/daemon), as opposed to
+// an operational failure of a working iscsiadm (timeout, lock contention,
+// non-zero exit from a real command). Signatures:
+//   - exit 127: shell/chroot "command not found"
+//   - spawn ENOENT: the wrapper binary itself is missing (exec rejects with
+//     { code: null, error: { code: "ENOENT" }, ... })
+//   - stderr: "not found" / "No such file or directory" (chroot/env), or the
+//     wrapper's "failed to find iscsid pid for nsenter" (nsenter strategy on a
+//     host with no iscsid)
+function iscsiadmUnusable(err) {
+  if (!err || err.timeout) {
+    return false;
+  }
+  if (err.code === 127 || err.code === "ENOENT") {
+    return true;
+  }
+  if (err.error && err.error.code === "ENOENT") {
+    return true;
+  }
+  const text = `${err.stderr || ""} ${err.message || ""}`.toLowerCase();
+  return (
+    text.includes("not found") ||
+    text.includes("no such file or directory") ||
+    text.includes("failed to find iscsid pid")
+  );
+}
+
 // LIMITATION: "no match => success" holds only when the target IQN embeds
 // volume_id; otherwise the device fallback (or the reaper) reclaims it.
-async function reclaimDeadIscsiSession(deps, volumeId) {
+//
+// options.iscsiExpected (default true): whether the caller has evidence the
+// volume involves iSCSI (iscsi-attached block device, dead-target umount
+// path). When false, an unusable iscsiadm (host without open-iscsi — a
+// supported config for NFS/SMB-only nodes) means "nothing to reclaim" rather
+// than a failed RPC; every other failure still fails fast so an unstage never
+// lies about success for a volume that might hold a live session.
+async function reclaimDeadIscsiSession(deps, volumeId, options = {}) {
   const { iscsiadm } = deps;
   const logger = deps.logger || NOOP_LOGGER;
+  const iscsiExpected = options.iscsiExpected !== false;
 
   let sessions;
   try {
     sessions = await iscsiadm.getSessionsDetails();
   } catch (e) {
+    if (!iscsiExpected && iscsiadmUnusable(e)) {
+      logger.warn(
+        `iscsiadm is unusable on this host and volume ${volumeId} shows no iscsi involvement, assuming no iscsi sessions to reclaim: ${
+          e.message || e.stderr || JSON.stringify(e)
+        }`
+      );
+      return { reclaimed: false, sessions: [] };
+    }
     throw new GrpcError(
       grpc.status.UNKNOWN,
       `failed to enumerate iscsi sessions for volume ${volumeId}: ${
@@ -3143,9 +3187,21 @@ class CsiBaseDriver {
           }
         }
 
+        // evidence of iSCSI involvement: an iscsi-attached block device, or
+        // the dead-target umount path above. With evidence, keep the honest
+        // fail-fast behavior (an unstage must not report success over a live
+        // session). Without it (NFS/SMB/hostpath/zfs-local), a host without
+        // open-iscsi (iscsiadm exit 127/ENOENT) must not fail the RPC.
+        const iscsi_expected =
+          device_confirmed_dead ||
+          (is_block &&
+            Boolean(block_device_info) &&
+            block_device_info.tran == "iscsi");
+
         const iscsi_reclaim = await reclaimDeadIscsiSession(
           iscsi_helper_deps,
-          volume_id
+          volume_id,
+          { iscsiExpected: iscsi_expected }
         );
 
         // device-based fallback for IQNs that don't embed volume_id, and nvme
@@ -4579,4 +4635,5 @@ module.exports.findIscsiSessionForVolumeId = findIscsiSessionForVolumeId;
 module.exports.logoutAndDeleteTarget = logoutAndDeleteTarget;
 module.exports.stagingDeviceIsDead = stagingDeviceIsDead;
 module.exports.reclaimDeadIscsiSession = reclaimDeadIscsiSession;
+module.exports.iscsiadmUnusable = iscsiadmUnusable;
 module.exports.disconnectNvmeByNQN = disconnectNvmeByNQN;
