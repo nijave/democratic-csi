@@ -465,7 +465,6 @@ class FreeNASApiDriver extends CsiBaseDriver {
           };
           return volume_context;
         }
-        break;
       /**
        * TODO: smb need to be more defensive like iscsi and nfs
        * ensuring the path is valid and the shareName
@@ -752,7 +751,6 @@ class FreeNASApiDriver extends CsiBaseDriver {
           };
           return volume_context;
         }
-        break;
       case "iscsi":
         {
           properties = await httpApiClient.DatasetGet(datasetName, [
@@ -1487,7 +1485,6 @@ class FreeNASApiDriver extends CsiBaseDriver {
           };
           return volume_context;
         }
-        break;
 
       case "nvmeof":
         {
@@ -1497,7 +1494,6 @@ class FreeNASApiDriver extends CsiBaseDriver {
                 grpc.status.FAILED_PRECONDITION,
                 `nvmeof feature is only available with version 2 of the api`
               );
-              break;
           }
 
           if (!isScale || semver.satisfies(truenasVersion, "<25.10")) {
@@ -1655,7 +1651,6 @@ class FreeNASApiDriver extends CsiBaseDriver {
           };
           return volume_context;
         }
-        break;
 
       default:
         throw new GrpcError(
@@ -2102,7 +2097,6 @@ class FreeNASApiDriver extends CsiBaseDriver {
                 grpc.status.FAILED_PRECONDITION,
                 `nvmeof feature is only available with version 2 of the api`
               );
-              break;
           }
 
           if (!isScale || semver.satisfies(truenasVersion, "<25.10")) {
@@ -2206,42 +2200,44 @@ class FreeNASApiDriver extends CsiBaseDriver {
   async expandVolume(call, datasetName) {
     // TODO: fix me
     return;
-    const driverShareType = this.getDriverShareType();
-    const sshClient = this.getSshClient();
-
-    switch (driverShareType) {
-      case "iscsi":
-        const isScale = await this.getIsScale();
-        let command;
-        let reload = false;
-        if (isScale) {
-          command = sshClient.buildCommand("systemctl", ["reload", "scst"]);
-          reload = true;
-        } else {
-          command = sshClient.buildCommand("/etc/rc.d/ctld", ["reload"]);
-          reload = true;
-        }
-
-        if (reload) {
-          if ((await this.getWhoAmI()) != "root") {
-            command = (await this.getSudoPath()) + " " + command;
-          }
-
-          this.ctx.logger.verbose(
-            "FreeNAS reloading iscsi daemon: %s",
-            command
-          );
-
-          let response = await sshClient.exec(command);
-          if (response.code != 0) {
-            throw new GrpcError(
-              grpc.status.UNKNOWN,
-              `error reloading iscsi daemon: ${JSON.stringify(response)}`
-            );
-          }
-        }
-        break;
-    }
+    // disabled implementation kept for reference:
+    //
+    // const driverShareType = this.getDriverShareType();
+    // const sshClient = this.getSshClient();
+    //
+    // switch (driverShareType) {
+    //   case "iscsi":
+    //     const isScale = await this.getIsScale();
+    //     let command;
+    //     let reload = false;
+    //     if (isScale) {
+    //       command = sshClient.buildCommand("systemctl", ["reload", "scst"]);
+    //       reload = true;
+    //     } else {
+    //       command = sshClient.buildCommand("/etc/rc.d/ctld", ["reload"]);
+    //       reload = true;
+    //     }
+    //
+    //     if (reload) {
+    //       if ((await this.getWhoAmI()) != "root") {
+    //         command = (await this.getSudoPath()) + " " + command;
+    //       }
+    //
+    //       this.ctx.logger.verbose(
+    //         "FreeNAS reloading iscsi daemon: %s",
+    //         command
+    //       );
+    //
+    //       let response = await sshClient.exec(command);
+    //       if (response.code != 0) {
+    //         throw new GrpcError(
+    //           grpc.status.UNKNOWN,
+    //           `error reloading iscsi daemon: ${JSON.stringify(response)}`
+    //         );
+    //       }
+    //     }
+    //     break;
+    // }
   }
 
   async getVolumeStatus(volume_id) {
@@ -3180,7 +3176,6 @@ class FreeNASApiDriver extends CsiBaseDriver {
             grpc.status.INVALID_ARGUMENT,
             `invalid volume_content_source type: ${volume_content_source.type}`
           );
-          break;
       }
     } else {
       // force blocksize on newly created zvols
@@ -4195,7 +4190,6 @@ class FreeNASApiDriver extends CsiBaseDriver {
                 grpc.status.FAILED_PRECONDITION,
                 `invalid operativeFilesystemType [${operativeFilesystemType}]`
               );
-              break;
           }
         } else if (types.includes("filesystem") || types.includes("volume")) {
           switch (operativeFilesystemType) {
@@ -4267,7 +4261,6 @@ class FreeNASApiDriver extends CsiBaseDriver {
                 grpc.status.FAILED_PRECONDITION,
                 `invalid operativeFilesystemType [${operativeFilesystemType}]`
               );
-              break;
           }
         } else {
           throw new GrpcError(
@@ -4282,15 +4275,12 @@ class FreeNASApiDriver extends CsiBaseDriver {
             case 1:
               //message = `invalid configuration: datasetParentName ${datasetParentName} does not exist`;
               continue;
-              break;
             case 2:
               message = `source_volume_id ${source_volume_id} does not exist`;
               continue;
-              break;
             case 3:
               message = `snapshot_id ${snapshot_id} does not exist`;
               continue;
-              break;
           }
           throw new GrpcError(grpc.status.NOT_FOUND, message);
         }

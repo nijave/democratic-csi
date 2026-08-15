@@ -433,15 +433,18 @@ class ControllerClientCommonDriver extends CsiBaseDriver {
     return;
 
     /**
+     * unused rsync-based alternative kept for reference (never worked; empty_path is undefined)
+     *
      * trailing / is important
      * rsync -a /mnt/storage/s/foo/ /mnt/storage/v/PVC-111/
+     *
+     * await this.exec("rsync", [
+     *   "-a",
+     *   "--delete",
+     *   this.stripTrailingSlash(empty_path) + "/",
+     *   this.stripTrailingSlash(path) + "/",
+     * ]);
      */
-    await this.exec("rsync", [
-      "-a",
-      "--delete",
-      this.stripTrailingSlash(empty_path) + "/",
-      this.stripTrailingSlash(path) + "/",
-    ]);
   }
 
   async directoryExists(path) {

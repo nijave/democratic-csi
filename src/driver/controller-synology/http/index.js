@@ -9,7 +9,7 @@ const { Registry } = require("../../../utils/registry");
 const USER_AGENT = "democratic-csi";
 const __REGISTRY_NS__ = "SynologyHttpClient";
 
-SYNO_ERRORS = {
+const SYNO_ERRORS = {
   400: {
     status: grpc.status.UNAUTHENTICATED,
     message: "Failed to authenticate to the Synology DSM.",

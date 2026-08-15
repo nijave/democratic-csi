@@ -1504,8 +1504,6 @@ class CsiBaseDriver {
             } else {
               return {};
             }
-
-            break;
           case "objectivefs":
             let objectivefs = driver.getDefaultObjectiveFSInstance();
             let ofs_filesystem = volume_context.filesystem;
@@ -1577,8 +1575,6 @@ class CsiBaseDriver {
               grpc.status.UNKNOWN,
               `failed to mount objectivefs: ${device}`
             );
-
-            break;
           case "oneclient":
             let oneclient = driver.getDefaultOneClientInstance();
             device = "oneclient";
@@ -1623,8 +1619,6 @@ class CsiBaseDriver {
               grpc.status.UNKNOWN,
               `failed to mount oneclient: ${volume_context.server}`
             );
-
-            break;
           case "zfs-local":
             // TODO: make this a geneic zb instance (to ensure works with node-manual driver)
             const zb = driver.getDefaultZetabyteInstance();
@@ -2323,7 +2317,6 @@ class CsiBaseDriver {
               win_staging_target_path
             );
             return {};
-            break;
           default:
             throw new GrpcError(
               grpc.status.INVALID_ARGUMENT,
@@ -3369,7 +3362,6 @@ class CsiBaseDriver {
               `unknown/unsupported node_attach_driver: ${node_attach_driver}`
             );
         }
-        break;
       case NODE_OS_DRIVER_WINDOWS:
         const WindowsUtils = require("../utils/windows").Windows;
         const wutils = new WindowsUtils();
@@ -3447,7 +3439,6 @@ class CsiBaseDriver {
               `unknown/unsupported node_attach_driver: ${node_attach_driver}`
             );
         }
-        break;
       case NODE_OS_DRIVER_CSI_PROXY:
         switch (node_attach_driver) {
           //case "nfs":
@@ -3526,7 +3517,6 @@ class CsiBaseDriver {
               `unknown/unsupported node_attach_driver: ${node_attach_driver}`
             );
         }
-        break;
       default:
         throw new GrpcError(
           grpc.status.UNIMPLEMENTED,

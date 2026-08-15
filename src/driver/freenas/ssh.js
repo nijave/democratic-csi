@@ -559,8 +559,6 @@ class FreeNASSshDriver extends ControllerZfsBaseDriver {
           };
           return volume_context;
         }
-
-        break;
       /**
        * TODO: smb need to be more defensive like iscsi and nfs
        * ensuring the path is valid and the shareName
@@ -847,8 +845,6 @@ class FreeNASSshDriver extends ControllerZfsBaseDriver {
           };
           return volume_context;
         }
-
-        break;
       case "iscsi":
         {
           properties = await zb.zfs.get(datasetName, [
@@ -1582,7 +1578,6 @@ class FreeNASSshDriver extends ControllerZfsBaseDriver {
           };
           return volume_context;
         }
-        break;
 
       case "nvmeof":
         {
@@ -1592,7 +1587,6 @@ class FreeNASSshDriver extends ControllerZfsBaseDriver {
                 grpc.status.FAILED_PRECONDITION,
                 `nvmeof feature is only available with version 2 of the api`
               );
-              break;
           }
 
           if (!isScale || semver.satisfies(truenasVersion, "<25.10")) {
@@ -1751,7 +1745,6 @@ class FreeNASSshDriver extends ControllerZfsBaseDriver {
           };
           return volume_context;
         }
-        break;
 
       default:
         throw new GrpcError(
@@ -2201,7 +2194,6 @@ class FreeNASSshDriver extends ControllerZfsBaseDriver {
                 grpc.status.FAILED_PRECONDITION,
                 `nvmeof feature is only available with version 2 of the api`
               );
-              break;
           }
 
           if (!isScale || semver.satisfies(truenasVersion, "<25.10")) {
@@ -2326,8 +2318,6 @@ class FreeNASSshDriver extends ControllerZfsBaseDriver {
         }
 
         throw new Error(JSON.stringify(response.body));
-
-        break;
       default:
         throw new GrpcError(
           grpc.status.FAILED_PRECONDITION,
@@ -2413,7 +2403,6 @@ class FreeNASSshDriver extends ControllerZfsBaseDriver {
         }
 
         throw new Error(JSON.stringify(response.body));
-        break;
       default:
         throw new GrpcError(
           grpc.status.FAILED_PRECONDITION,

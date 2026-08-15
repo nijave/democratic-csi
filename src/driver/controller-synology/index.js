@@ -397,14 +397,12 @@ class ControllerSynologyDriver extends CsiBaseDriver {
           grpc.status.UNIMPLEMENTED,
           `operation not supported by driver`
         );
-        break;
       case "smb":
         // TODO: create volume here
         throw new GrpcError(
           grpc.status.UNIMPLEMENTED,
           `operation not supported by driver`
         );
-        break;
       case "iscsi":
         let iscsiName = driver.buildIscsiName(volume_id);
         let lunTemplate;
@@ -563,7 +561,6 @@ class ControllerSynologyDriver extends CsiBaseDriver {
                 grpc.status.INVALID_ARGUMENT,
                 `invalid volume_content_source type: ${volume_content_source.type}`
               );
-              break;
           }
           // resize to requested amount
 
@@ -651,7 +648,6 @@ class ControllerSynologyDriver extends CsiBaseDriver {
           grpc.status.UNIMPLEMENTED,
           `operation not supported by driver`
         );
-        break;
     }
 
     volume_context["provisioner_driver"] = driver.options.driver;
@@ -710,14 +706,12 @@ class ControllerSynologyDriver extends CsiBaseDriver {
           grpc.status.UNIMPLEMENTED,
           `operation not supported by driver`
         );
-        break;
       case "smb":
         // TODO: delete volume here
         throw new GrpcError(
           grpc.status.UNIMPLEMENTED,
           `operation not supported by driver`
         );
-        break;
       case "iscsi":
         //await httpClient.DeleteAllLuns();
 
@@ -775,7 +769,6 @@ class ControllerSynologyDriver extends CsiBaseDriver {
           grpc.status.UNIMPLEMENTED,
           `operation not supported by driver`
         );
-        break;
     }
 
     return {};
@@ -843,14 +836,12 @@ class ControllerSynologyDriver extends CsiBaseDriver {
           grpc.status.UNIMPLEMENTED,
           `operation not supported by driver`
         );
-        break;
       case "smb":
         // TODO: expand volume here
         throw new GrpcError(
           grpc.status.UNIMPLEMENTED,
           `operation not supported by driver`
         );
-        break;
       case "iscsi":
         node_expansion_required = true;
         let iscsiName = driver.buildIscsiName(volume_id);
@@ -863,7 +854,6 @@ class ControllerSynologyDriver extends CsiBaseDriver {
           grpc.status.UNIMPLEMENTED,
           `operation not supported by driver`
         );
-        break;
     }
 
     return {
@@ -1123,14 +1113,12 @@ class ControllerSynologyDriver extends CsiBaseDriver {
           grpc.status.UNIMPLEMENTED,
           `operation not supported by driver`
         );
-        break;
       case "smb":
         // TODO: expand volume here
         throw new GrpcError(
           grpc.status.UNIMPLEMENTED,
           `operation not supported by driver`
         );
-        break;
       case "iscsi":
         let iscsiName = driver.buildIscsiName(volume_id);
 
@@ -1147,7 +1135,6 @@ class ControllerSynologyDriver extends CsiBaseDriver {
           grpc.status.UNIMPLEMENTED,
           `operation not supported by driver`
         );
-        break;
     }
 
     const result = this.assertCapabilities(call.request.volume_capabilities);

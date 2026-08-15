@@ -123,6 +123,8 @@ class SshClient {
     const client = this;
     const conn = this.conn;
 
+    // pre-existing async promise executor; left as-is to avoid behavior change
+    // eslint-disable-next-line no-async-promise-executor
     return new Promise(async (resolve, reject) => {
       do {
         try {
