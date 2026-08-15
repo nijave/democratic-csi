@@ -678,6 +678,13 @@ class ISCSI {
         parseInt(process.env.ISCSIADM_TIMEOUT_RETRIES || "1", 10) || 0
       );
 
+    // node's spawn timeout only sends SIGTERM; escalate to SIGKILL after this
+    // grace so an iscsiadm ignoring SIGTERM can't wedge the mutex forever
+    const killGraceMs = Math.max(
+      0,
+      parseInt(process.env.ISCSIADM_KILL_GRACE_MS || "10000", 10) || 0
+    );
+
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         return await iscsiadmExecMutex.runExclusive(() => {
@@ -710,6 +717,25 @@ class ISCSI {
       return new Promise((resolve, reject) => {
         const child = iscsi.options.executor.spawn(command, args, options);
 
+        // SIGKILL escalation, fired only after the spawn timeout's SIGTERM
+        let killTimer = null;
+        const timeoutMs = parseInt(options.timeout, 10) || 0;
+        if (timeoutMs > 0) {
+          killTimer = setTimeout(() => {
+            killTimer = null;
+            if (typeof child.kill === "function") {
+              child.kill("SIGKILL");
+            }
+          }, timeoutMs + killGraceMs);
+        }
+
+        function clearKillTimer() {
+          if (killTimer) {
+            clearTimeout(killTimer);
+            killTimer = null;
+          }
+        }
+
         let stdout = "";
         let stderr = "";
 
@@ -723,6 +749,7 @@ class ISCSI {
 
         // spawn failures (ENOENT etc.) don't always emit close, so reject here
         child.on("error", function (err) {
+          clearKillTimer();
           const result = {
             code: null,
             stdout,
@@ -734,12 +761,14 @@ class ISCSI {
         });
 
         child.on("close", function (code) {
+          clearKillTimer();
           const result = { code, stdout, stderr, timeout: false };
 
-          // timeout scenario
+          // killed by signal (spawn timeout's SIGTERM or SIGKILL escalation)
           if (code === null) {
             result.timeout = true;
             reject(result);
+            return;
           }
 
           if (code) {
