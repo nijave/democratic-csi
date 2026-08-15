@@ -1,6 +1,7 @@
 const cp = require("child_process");
 const { hostname_lookup, sleep } = require("./general");
 const net = require("net");
+const { Mutex } = require("async-mutex");
 
 function getIscsiValue(value) {
   if (value == "<empty>") return null;
@@ -8,6 +9,10 @@ function getIscsiValue(value) {
 }
 
 const DEFAULT_TIMEOUT = process.env.ISCSI_DEFAULT_TIMEOUT || 30000;
+
+// serialize iscsiadm process-wide: open-iscsi guards the node DB with one
+// exclusive lock, so concurrent invocations only form a lock convoy
+const iscsiadmExecMutex = new Mutex();
 
 class ISCSI {
   constructor(options = {}) {
@@ -662,37 +667,53 @@ class ISCSI {
       cleansedArgs[argIndex + 2] = "redacted";
     }
 
-    const cleansedLog = `${command} ${cleansedArgs.join(" ")}`;
-    console.log("executing iscsi command: %s", cleansedLog);
+    return iscsiadmExecMutex.runExclusive(() => {
+      // log at actual execution, not enqueue, so log timestamps reflect
+      // when the command really ran
+      const cleansedLog = `${command} ${cleansedArgs.join(" ")}`;
+      console.log("executing iscsi command: %s", cleansedLog);
 
-    return new Promise((resolve, reject) => {
-      const child = iscsi.options.executor.spawn(command, args, options);
+      return new Promise((resolve, reject) => {
+        const child = iscsi.options.executor.spawn(command, args, options);
 
-      let stdout = "";
-      let stderr = "";
+        let stdout = "";
+        let stderr = "";
 
-      child.stdout.on("data", function (data) {
-        stdout = stdout + data;
-      });
+        child.stdout.on("data", function (data) {
+          stdout = stdout + data;
+        });
 
-      child.stderr.on("data", function (data) {
-        stderr = stderr + data;
-      });
+        child.stderr.on("data", function (data) {
+          stderr = stderr + data;
+        });
 
-      child.on("close", function (code) {
-        const result = { code, stdout, stderr, timeout: false };
-
-        // timeout scenario
-        if (code === null) {
-          result.timeout = true;
+        // spawn failures (ENOENT etc.) don't always emit close, so reject here
+        child.on("error", function (err) {
+          const result = {
+            code: null,
+            stdout,
+            stderr: String(err),
+            timeout: false,
+            error: err,
+          };
           reject(result);
-        }
+        });
 
-        if (code) {
-          reject(result);
-        } else {
-          resolve(result);
-        }
+        child.on("close", function (code) {
+          const result = { code, stdout, stderr, timeout: false };
+
+          // timeout scenario
+          if (code === null) {
+            result.timeout = true;
+            reject(result);
+          }
+
+          if (code) {
+            reject(result);
+          } else {
+            resolve(result);
+          }
+        });
       });
     });
   }
