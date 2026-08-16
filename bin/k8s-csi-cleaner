@@ -105,11 +105,14 @@ async function main() {
     kc.loadFromDefault();
     const k8sApi = kc.makeApiClient(k8s.CoreV1Api);
     // V1PersistentVolumeList
-    k8sApi.listPersistentVolume().then((res) => {
-      //console.log(res);
-      //console.dir(res.items, { depth: null }); // `depth: null` ensures unlimited recursion
-      resolve(res.items);
-    });
+    k8sApi
+      .listPersistentVolume()
+      .then((res) => {
+        //console.log(res);
+        //console.dir(res.items, { depth: null }); // `depth: null` ensures unlimited recursion
+        resolve(res.items);
+      })
+      .catch(reject);
   });
   console.log(`${k8sVolumes.length} k8s PVs discovered`);
 
@@ -173,6 +176,7 @@ if (require.main === module) {
       await main();
     } catch (e) {
       console.log(e);
+      process.exit(1);
     }
   })();
 }
