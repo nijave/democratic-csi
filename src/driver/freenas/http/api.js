@@ -911,7 +911,23 @@ class Api {
         JSON.stringify(response.body).includes("already used by subsystem"))
     ) {
       //This device_path already used by subsystem: csi-pvc-111-clustera
-      return this.NvmetNamespaceGetByDeivcePath(zvol);
+      const namespace = await this.NvmetNamespaceGetByDeivcePath(zvol);
+      // lookup filters by device_path only; ensure the existing namespace
+      // actually belongs to the requested subsystem before adopting it
+      // (query results nest the subsystem as `subsys`, create takes `subsys_id`)
+      const namespaceSubsysId = _.get(
+        namespace,
+        "subsys.id",
+        _.get(namespace, "subsys_id")
+      );
+      if (namespaceSubsysId != subsysId) {
+        throw new Error(
+          `namespace with device_path ${zvol} already exists but belongs to subsys_id ${namespaceSubsysId} (expected ${subsysId}): ${JSON.stringify(
+            namespace
+          )}`
+        );
+      }
+      return namespace;
     }
 
     throw new Error(JSON.stringify(response.body));
