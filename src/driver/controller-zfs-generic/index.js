@@ -235,7 +235,7 @@ class ControllerZfsGenericDriver extends ControllerZfsBaseDriver {
                       attributeName
                     ];
                   setBlockAttributesText += "\n";
-                  setBlockAttributesText += `set attribute ${attributeName}=${attributeValue}`;
+                  setBlockAttributesText += `/backstores/block/${assetName} set attribute ${attributeName}=${attributeValue}`;
                 }
               }
             }
@@ -249,7 +249,7 @@ class ControllerZfsGenericDriver extends ControllerZfsBaseDriver {
                       attributeName
                     ];
                   setAttributesText += "\n";
-                  setAttributesText += `set attribute ${attributeName}=${attributeValue}`;
+                  setAttributesText += `/iscsi/${basename}:${assetName}/tpg1 set attribute ${attributeName}=${attributeValue}`;
                 }
               }
 
@@ -261,7 +261,7 @@ class ControllerZfsGenericDriver extends ControllerZfsBaseDriver {
                       attributeName
                     ];
                   setAttributesText += "\n";
-                  setAttributesText += `set auth ${attributeName}=${attributeValue}`;
+                  setAttributesText += `/iscsi/${basename}:${assetName}/tpg1 set auth ${attributeName}=${attributeValue}`;
                 }
               }
             }
@@ -273,23 +273,18 @@ class ControllerZfsGenericDriver extends ControllerZfsBaseDriver {
                 await this.targetCliCommand(
                   `
 # create target
-cd /iscsi
-create ${basename}:${assetName}
+/iscsi create ${basename}:${assetName}
 
 # setup tpg
-cd /iscsi/${basename}:${assetName}/tpg1
 ${setAttributesText}
 ${setAuthText}
 
 # create extent
-cd /backstores/block
-create ${assetName} /dev/${extentDiskName}
-cd /backstores/block/${assetName}
+/backstores/block create ${assetName} /dev/${extentDiskName}
 ${setBlockAttributesText}
 
 # add extent to target/tpg
-cd /iscsi/${basename}:${assetName}/tpg1/luns
-create /backstores/block/${assetName}
+/iscsi/${basename}:${assetName}/tpg1/luns create /backstores/block/${assetName}
 `
                 );
               },
@@ -733,12 +728,10 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
                 await this.targetCliCommand(
                   `
 # delete target
-cd /iscsi
-delete ${basename}:${assetName}
+/iscsi delete ${basename}:${assetName}
 
 # delete extent
-cd /backstores/block
-delete ${assetName}
+/backstores/block delete ${assetName}
 `
                 );
               },
