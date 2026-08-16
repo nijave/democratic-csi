@@ -2,12 +2,12 @@
 
 P="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin"
 
+# exec so zfs runs in the pid the caller tracks; without it a killed
+# wrapper orphans zfs to PID 1 (node reaps only what it spawns) -> zombie.
 for p in $(echo $P | cut -d ":" -f 1- --output-delimiter=" "); do
   if [[ -f "/host${p}/zfs" ]]; then
-    chroot /host "${p}/zfs" "${@:1}"
-    exit $?
+    exec chroot /host "${p}/zfs" "${@:1}"
   fi
 done
 
-chroot /host /usr/bin/env -i PATH="${P}" zfs "${@:1}"
-exit $?
+exec chroot /host /usr/bin/env -i PATH="${P}" zfs "${@:1}"
