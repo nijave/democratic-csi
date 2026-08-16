@@ -6,6 +6,7 @@ const {
   logoutAndDeleteTarget,
   stagingDeviceIsDead,
   reclaimDeadIscsiSession,
+  iscsiadmUnusable,
   disconnectNvmeByNQN,
 } = require("../../src/driver/index");
 const { grpc } = require("../../src/utils/grpc");
@@ -391,6 +392,174 @@ describe("reclaimDeadIscsiSession", () => {
       reclaimDeadIscsiSession(deps(iscsiadm, spyLogger()), VOLUME_ID),
       isUnknown
     );
+  });
+});
+
+// error shapes as rejected by iscsi.exec (utils/iscsi.js)
+// exit 127 from the docker/iscsiadm chroot wrapper: host has no open-iscsi
+function exit127Error() {
+  return {
+    code: 127,
+    stdout: "",
+    stderr:
+      "chroot: failed to run command 'iscsiadm': No such file or directory",
+    timeout: false,
+  };
+}
+
+// spawn failure: the wrapper binary itself is missing
+function spawnEnoentError() {
+  const err = new Error("spawn /usr/local/sbin/iscsiadm ENOENT");
+  err.code = "ENOENT";
+  return {
+    code: null,
+    stdout: "",
+    stderr: String(err),
+    timeout: false,
+    error: err,
+  };
+}
+
+describe("iscsiadmUnusable", () => {
+  it("recognizes host-missing-iscsiadm signatures", () => {
+    assert.strictEqual(iscsiadmUnusable(exit127Error()), true);
+    assert.strictEqual(iscsiadmUnusable(spawnEnoentError()), true);
+    assert.strictEqual(
+      iscsiadmUnusable({ code: 1, stderr: "sh: iscsiadm: not found" }),
+      true
+    );
+    assert.strictEqual(
+      iscsiadmUnusable({
+        code: 1,
+        stderr: "failed to find iscsid pid for nsenter",
+      }),
+      true
+    );
+  });
+
+  it("does NOT classify operational failures as unusable", () => {
+    // timeout (lock convoy / stalled iscsid)
+    assert.strictEqual(
+      iscsiadmUnusable({ code: null, stderr: "", timeout: true }),
+      false
+    );
+    // real iscsiadm error from a working binary
+    assert.strictEqual(
+      iscsiadmUnusable({
+        code: 8,
+        stderr: "iscsiadm: connection login retries (reopen_max) 5 exceeded",
+      }),
+      false
+    );
+    // exit 21 "No records found" must not read as "not found"
+    assert.strictEqual(
+      iscsiadmUnusable({ code: 21, stderr: "iscsiadm: No records found" }),
+      false
+    );
+    assert.strictEqual(iscsiadmUnusable(new Error("iscsiadm exploded")), false);
+  });
+});
+
+describe("reclaimDeadIscsiSession - gating for volumes with no iscsi evidence (issue #33)", () => {
+  // regression: NFS/SMB/hostpath unstage on a host without open-iscsi must not
+  // fail the RPC because the unconditional reclaim could not run iscsiadm
+  for (const [label, makeError] of [
+    ["chroot wrapper exit 127", exit127Error],
+    ["spawn ENOENT", spawnEnoentError],
+  ]) {
+    it(`tolerates ${label} when iscsiExpected=false (nothing to reclaim, RPC continues)`, async () => {
+      const iscsiadm = fakeIscsiadm({ sessions: [] });
+      iscsiadm.getSessionsDetails = async () => {
+        throw makeError();
+      };
+      const logger = spyLogger();
+      const res = await reclaimDeadIscsiSession(
+        deps(iscsiadm, logger),
+        VOLUME_ID,
+        { iscsiExpected: false }
+      );
+      assert.deepStrictEqual(res, { reclaimed: false, sessions: [] });
+      assert.strictEqual(iscsiadm.calls.logout.length, 0);
+      assert.strictEqual(iscsiadm.calls.deleteNodeDBEntry.length, 0);
+      // tolerated, not silent
+      assert.ok(
+        logger.messages.warn.some((m) =>
+          m.includes("assuming no iscsi sessions to reclaim")
+        ),
+        "expected a warning about the unusable iscsiadm"
+      );
+    });
+  }
+
+  it("still hard-fails on exit 127 when iscsi involvement is confirmed (iscsiExpected=true)", async () => {
+    const iscsiadm = fakeIscsiadm({ sessions: [] });
+    iscsiadm.getSessionsDetails = async () => {
+      throw exit127Error();
+    };
+    await assert.rejects(
+      reclaimDeadIscsiSession(deps(iscsiadm, spyLogger()), VOLUME_ID, {
+        iscsiExpected: true,
+      }),
+      isUnknown
+    );
+  });
+
+  it("still hard-fails on exit 127 by default (existing callers keep fail-fast)", async () => {
+    const iscsiadm = fakeIscsiadm({ sessions: [] });
+    iscsiadm.getSessionsDetails = async () => {
+      throw exit127Error();
+    };
+    await assert.rejects(
+      reclaimDeadIscsiSession(deps(iscsiadm, spyLogger()), VOLUME_ID),
+      isUnknown
+    );
+  });
+
+  it("still hard-fails when iscsiExpected=false but the failure is operational (timeout), not a missing binary", async () => {
+    const iscsiadm = fakeIscsiadm({ sessions: [] });
+    iscsiadm.getSessionsDetails = async () => {
+      throw { code: null, stdout: "", stderr: "", timeout: true };
+    };
+    await assert.rejects(
+      reclaimDeadIscsiSession(deps(iscsiadm, spyLogger()), VOLUME_ID, {
+        iscsiExpected: false,
+      }),
+      isUnknown
+    );
+  });
+
+  it("a matched session is itself iscsi evidence: re-enumeration failure hard-fails even with iscsiExpected=false", async () => {
+    const iscsiadm = fakeIscsiadm({ sessions: [session(IQN)] });
+    const realGetSessionsDetails =
+      iscsiadm.getSessionsDetails.bind(iscsiadm);
+    let enumerations = 0;
+    iscsiadm.getSessionsDetails = async () => {
+      enumerations++;
+      if (enumerations > 1) {
+        throw exit127Error();
+      }
+      return realGetSessionsDetails();
+    };
+    await assert.rejects(
+      reclaimDeadIscsiSession(deps(iscsiadm, spyLogger()), VOLUME_ID, {
+        iscsiExpected: false,
+      }),
+      isUnknown
+    );
+    // the logout still ran before the verification failure
+    assert.strictEqual(iscsiadm.calls.logout.length, 1);
+  });
+
+  it("iscsiExpected=false does not change behavior when iscsiadm works and a session matches (still reclaims + verifies)", async () => {
+    const iscsiadm = fakeIscsiadm({ sessions: [session(IQN)] });
+    const res = await reclaimDeadIscsiSession(
+      deps(iscsiadm, spyLogger()),
+      VOLUME_ID,
+      { iscsiExpected: false }
+    );
+    assert.strictEqual(res.reclaimed, true);
+    assert.strictEqual(iscsiadm.peekSessions().length, 0);
+    assert.strictEqual(iscsiadm.peekDB().size, 0);
   });
 });
 
