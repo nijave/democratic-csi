@@ -26,8 +26,18 @@
  *     by NodeStageVolume (`-o new` + attribute updates are idempotent).
  *   - When targetBasename is configured, only targets whose IQN starts
  *     with it are considered; foreign targets are left untouched.
- *   - Every delete is logged. Per-record failures are logged and skipped;
- *     a single failure never aborts the sweep.
+ *   - Immediately before each delete the record is re-verified with fresh
+ *     iscsiadm queries: it must still exist and its IQN must still have no
+ *     session. NodeStageVolume creates the node-DB record (`-o new` + CHAP
+ *     attributes) BEFORE it logs in, and the sweep runs outside the
+ *     per-volume operation lock, so a record that looked orphaned in the
+ *     initial snapshot may belong to a stage in flight; the re-check
+ *     shrinks that exposure from the whole sweep duration to the gap
+ *     between the re-check and the delete. (Closing it completely would
+ *     need an atomic check+delete holding the shared iscsiadm exec mutex
+ *     across both commands -- an iscsi.js API change left as follow-up.)
+ *   - Every delete and every re-check skip is logged. Per-record failures
+ *     are logged and skipped; a single failure never aborts the sweep.
  *
  * The candidate-selection predicate is a pure, dependency-injected
  * function so it can be unit tested without a real iscsiadm/host. The
@@ -127,6 +137,36 @@ class ISCSINodeDbSweeper {
 
     for (const record of orphans) {
       try {
+        // Re-verify with fresh iscsiadm queries immediately before the
+        // delete: the snapshot above may be arbitrarily stale by now, and
+        // NodeStageVolume creates the node-DB record before logging in, so
+        // a "no session" classification from the snapshot can describe a
+        // stage that is in flight right now.
+        const exists = await sweeper.iscsi.iscsiadm.nodeDBEntryExists(
+          record.iqn,
+          record.portal
+        );
+        if (!exists) {
+          sweeper.logger.info(
+            "iscsi node-db sweep: skipping %s %s: record no longer exists",
+            record.portal,
+            record.iqn
+          );
+          continue;
+        }
+
+        // Session re-check last so it sits closest to the delete: a login
+        // completing between the snapshot and here is the dangerous flip.
+        const currentSessions = await sweeper.iscsi.iscsiadm.getSessions();
+        if (currentSessions.some((session) => session.iqn === record.iqn)) {
+          sweeper.logger.info(
+            "iscsi node-db sweep: skipping %s %s: session appeared since snapshot",
+            record.portal,
+            record.iqn
+          );
+          continue;
+        }
+
         await sweeper.iscsi.iscsiadm.deleteNodeDBEntry(
           record.iqn,
           record.portal
