@@ -736,6 +736,19 @@ class ISCSI {
         parseInt(process.env.ISCSIADM_TIMEOUT_RETRIES || "1", 10) || 0
       );
 
+    // node's spawn timeout only sends killSignal (SIGTERM by default) with
+    // no escalation. an iscsiadm that ignores SIGTERM never exits, close
+    // never fires, the promise never settles, and the module-level mutex
+    // above wedges every iscsiadm op in the process (driver, session
+    // reaper, node-DB sweeper). give it this much grace after the spawn
+    // timeout fires, then SIGKILL so the child is reaped and the queue
+    // drains. a child stuck in uninterruptible sleep (D-state) ignores
+    // SIGKILL too -- that is a kernel-level hang nothing here can fix
+    const killGraceMs = Math.max(
+      0,
+      parseInt(process.env.ISCSIADM_KILL_GRACE_MS || "10000", 10) || 0
+    );
+
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         return await iscsiadmExecMutex.runExclusive(() => {
@@ -769,6 +782,27 @@ class ISCSI {
       return new Promise((resolve, reject) => {
         const child = iscsi.options.executor.spawn(command, args, options);
 
+        // SIGKILL escalation: armed for timeout + grace so it only fires
+        // after the spawn timeout's SIGTERM has already failed to produce
+        // a close event. cleared as soon as the child settles
+        let killTimer = null;
+        const timeoutMs = parseInt(options.timeout, 10) || 0;
+        if (timeoutMs > 0) {
+          killTimer = setTimeout(() => {
+            killTimer = null;
+            if (typeof child.kill === "function") {
+              child.kill("SIGKILL");
+            }
+          }, timeoutMs + killGraceMs);
+        }
+
+        function clearKillTimer() {
+          if (killTimer) {
+            clearTimeout(killTimer);
+            killTimer = null;
+          }
+        }
+
         let stdout = "";
         let stderr = "";
 
@@ -784,6 +818,7 @@ class ISCSI {
         // this the promise never settles and would wedge every subsequent
         // iscsiadm behind the mutex
         child.on("error", function (err) {
+          clearKillTimer();
           const result = {
             code: null,
             stdout,
@@ -795,12 +830,15 @@ class ISCSI {
         });
 
         child.on("close", function (code) {
+          clearKillTimer();
           const result = { code, stdout, stderr, timeout: false };
 
-          // timeout scenario
+          // timeout scenario (killed by signal: spawn timeout's SIGTERM or
+          // the SIGKILL escalation above)
           if (code === null) {
             result.timeout = true;
             reject(result);
+            return;
           }
 
           if (code) {
