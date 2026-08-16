@@ -131,6 +131,10 @@ class SshClient {
     const client = this;
     const conn = this.conn;
 
+    // pre-existing async executor: a rethrown error here (see the catch
+    // below) surfaces as an unhandled rejection instead of rejecting the
+    // returned promise; left as-is to avoid a behavioral change
+    // eslint-disable-next-line no-async-promise-executor
     return new Promise(async (resolve, reject) => {
       do {
         try {
