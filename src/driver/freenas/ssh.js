@@ -2461,9 +2461,13 @@ class FreeNASSshDriver extends ControllerZfsBaseDriver {
            * works on SCALE only ^
            *
            */
+          // execClient.buildCommand() shell-escapes each arg itself (wrapping
+          // in single quotes), so the -c payload must be passed raw - wrapping
+          // it here too makes the remote shell treat the double-quoted text as
+          // a command name (exit 127).
           command = execClient.buildCommand("sh", [
             "-c",
-            `"echo 1 > /sys/kernel/scst_tgt/devices/${kName}/resync_size"`,
+            `echo 1 > /sys/kernel/scst_tgt/devices/${kName}/resync_size`,
           ]);
           reload = true;
         } else {
