@@ -1139,7 +1139,6 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
             grpc.status.INVALID_ARGUMENT,
             `invalid volume_content_source type: ${volume_content_source.type}`
           );
-          break;
       }
     } else {
       // force blocksize on newly created zvols
@@ -1664,12 +1663,14 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
       return { available_capacity: properties.available.value };
     } catch (err) {
       throw err;
+      // disabled handler kept for reference:
       // gracefully handle csi-test suite when parent dataset does not yet exist
-      if (err.toString().includes("dataset does not exist")) {
-        return { available_capacity: 0 };
-      } else {
-        throw err;
-      }
+      //
+      // if (err.toString().includes("dataset does not exist")) {
+      //   return { available_capacity: 0 };
+      // } else {
+      //   throw err;
+      // }
     }
   }
 
@@ -2054,15 +2055,12 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
             case 1:
               //message = `invalid configuration: datasetParentName ${datasetParentName} does not exist`;
               continue;
-              break;
             case 2:
               message = `source_volume_id ${source_volume_id} does not exist`;
               continue;
-              break;
             case 3:
               message = `snapshot_id ${snapshot_id} does not exist`;
               continue;
-              break;
           }
           throw new GrpcError(grpc.status.NOT_FOUND, message);
         }

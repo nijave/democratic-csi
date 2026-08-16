@@ -56,8 +56,8 @@ jobs:
           path: node_modules-windows-amd64.tar.gz
           retention-days: 1
 
-  # runs the repo's node:test unit suite under test/; intentionally NOT
-  # gated on github.repository so it also runs on forks
+  # runs eslint and the repo's node:test unit suite under test/; intentionally
+  # NOT gated on github.repository so it also runs on forks
   unit-tests:
     runs-on: ubuntu-latest
     steps:
@@ -69,6 +69,10 @@ jobs:
         name: npm ci
         run: |
           npm ci
+      - shell: bash
+        name: npm run lint
+        run: |
+          npm run lint
       - shell: bash
         name: npm test
         run: |
