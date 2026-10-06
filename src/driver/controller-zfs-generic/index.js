@@ -13,6 +13,14 @@ const Handlebars = require("handlebars");
 const ISCSI_ASSETS_NAME_PROPERTY_NAME = "democratic-csi:iscsi_assets_name";
 const NVMEOF_ASSETS_NAME_PROPERTY_NAME = "democratic-csi:nvmeof_assets_name";
 const __REGISTRY_NS__ = "ControllerZfsGenericDriver";
+
+// CHAP secrets appear in scripts ("set auth password=...") and in the echoed
+// output ("Parameter password is now '...'")
+function redactTargetCliSecrets(text) {
+  return text
+    .replace(/((?:mutual_)?password=)[^\s"\\]+/g, "$1<redacted>")
+    .replace(/(Parameter (?:mutual_)?password is now ')[^']*'/g, "$1<redacted>'");
+}
 class ControllerZfsGenericDriver extends ControllerZfsBaseDriver {
   constructor(ctx, options) {
     super(...arguments);
@@ -266,6 +274,10 @@ class ControllerZfsGenericDriver extends ControllerZfsBaseDriver {
               }
             }
 
+            // a freshly cloned zvol's /dev/zvol symlink is created by udev
+            // asynchronously; targetcli cannot open it until it exists
+            await this.waitForDevice(`/dev/${extentDiskName}`);
+
             await GeneralUtils.retry(
               3,
               2000,
@@ -287,10 +299,21 @@ ${setBlockAttributesText}
 /iscsi/${basename}:${assetName}/tpg1/luns create /backstores/block/${assetName}
 `
                 );
+
+                // targetcli exits 0 even when individual commands fail (e.g.
+                // "Could not open /dev/zvol/..."), which would leave a target
+                // without a LUN; confirm the objects actually exist
+                await this.targetCliVerifyPaths([
+                  `/backstores/block/${assetName}`,
+                  `/iscsi/${basename}:${assetName}/tpg1/luns/lun0`,
+                ]);
               },
               {
                 retryCondition: (err) => {
                   if (err.stdout && err.stdout.includes("Ran out of input")) {
+                    return true;
+                  }
+                  if (err instanceof GrpcError) {
                     return true;
                   }
                   return false;
@@ -1041,20 +1064,7 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
     // pass raw: execClient.buildCommand() shell-escapes each arg itself
     args.push(cliCommand.join(" "));
 
-    let logCommandTmp = command + " " + args.join(" ");
-    let logCommand = "";
-
-    logCommandTmp.split("\n").forEach((line) => {
-      if (line.startsWith("set auth password=")) {
-        logCommand += "set auth password=<redacted>";
-      } else if (line.startsWith("set auth mutual_password=")) {
-        logCommand += "set auth mutual_password=<redacted>";
-      } else {
-        logCommand += line;
-      }
-
-      logCommand += "\n";
-    });
+    let logCommand = redactTargetCliSecrets(command + " " + args.join(" "));
 
     driver.ctx.logger.verbose("TargetCLI command: " + logCommand);
 
@@ -1072,13 +1082,73 @@ save_config filename=${this.options.nvmeof.shareStrategySpdkCli.configPath}
       execClient.buildCommand(command, args),
       options
     );
+    // the pty echoes the script back, so the response carries secrets too
     driver.ctx.logger.verbose(
-      "TargetCLI response: " + JSON.stringify(response)
+      "TargetCLI response: " + redactTargetCliSecrets(JSON.stringify(response))
     );
     if (response.code != 0) {
       throw response;
     }
     return response;
+  }
+
+  /**
+   * targetcli prints "No such path <path>" for a missing node but still exits
+   * 0, so check the output rather than the exit code
+   */
+  async targetCliVerifyPaths(paths) {
+    const response = await this.targetCliCommand(
+      paths.map((path) => `${path} pwd`).join("\n")
+    );
+    const stdout = response.stdout || "";
+    if (stdout.includes("No such path")) {
+      throw new GrpcError(
+        grpc.status.UNAVAILABLE,
+        `targetcli objects missing after create: ${paths.join(", ")}`
+      );
+    }
+  }
+
+  /**
+   * wait for a device node on the storage host, e.g. the udev-managed
+   * /dev/zvol/<dataset> symlink of a freshly created or cloned zvol
+   */
+  async waitForDevice(path) {
+    const execClient = this.getExecClient();
+    const timeout = _.get(
+      this.options,
+      "iscsi.shareStrategyTargetCli.deviceWaitTimeout",
+      30000
+    );
+    const interval = _.get(
+      this.options,
+      "iscsi.shareStrategyTargetCli.deviceWaitInterval",
+      1000
+    );
+
+    // best effort: udevadm may be missing or need privileges
+    try {
+      await execClient.exec(execClient.buildCommand("udevadm", ["settle"]));
+    } catch (err) {
+      this.ctx.logger.debug("udevadm settle failed: %s", err);
+    }
+
+    const deadline = Date.now() + timeout;
+    while (true) {
+      const response = await execClient.exec(
+        execClient.buildCommand("test", ["-e", path])
+      );
+      if (response.code == 0) {
+        return;
+      }
+      if (Date.now() >= deadline) {
+        throw new GrpcError(
+          grpc.status.UNAVAILABLE,
+          `timed out waiting for device ${path} on storage host`
+        );
+      }
+      await GeneralUtils.sleep(interval);
+    }
   }
 
   async nvmetCliCommand(data) {

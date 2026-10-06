@@ -45,6 +45,9 @@ function driverWithCapture(captured) {
     },
     getZetabyte: async () => zb,
     getExecClient: () => ({}),
+    // covered by targetcli-create-verify.test.js
+    waitForDevice: async () => {},
+    targetCliVerifyPaths: async () => {},
     // capture the script and report success; anything the method does after the
     // share is created is irrelevant to what we assert, so callers ignore it.
     targetCliCommand: async (script) => {
