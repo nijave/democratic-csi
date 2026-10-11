@@ -22,9 +22,14 @@ steps:
       # matches `git rev-parse --short HEAD` (7 chars at this repo size),
       # which is the tag the vmubtkube-a deploy PRs pin
       - SHORT_SHA=$(echo "$CI_COMMIT_SHA" | cut -c1-7)
+      - IMAGE=registry.apps.nickv.me/democratic-csi/democratic-csi
+      - NAMES="$IMAGE:$SHORT_SHA"
+      # Renovate in vmubtkube-a tracks the digest behind `latest`, so master
+      # builds must move it; manual runs on other branches must not.
+      - if [ "$CI_COMMIT_BRANCH" = master ]; then NAMES="$NAMES,$IMAGE:latest"; fi
       - >-
         buildctl build
         --frontend dockerfile.v0
         --local context=.
         --local dockerfile=.
-        --output "type=image,name=registry.apps.nickv.me/democratic-csi/democratic-csi:$SHORT_SHA,push=true"
+        --output "type=image,\"name=$NAMES\",push=true"
