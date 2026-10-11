@@ -471,16 +471,90 @@ class CsiBaseDriver {
     return normalized;
   }
 
+  /**
+   * Validate a property name/value coming from an option overlay (StorageClass
+   * parameter or PVC config annotation) destined for zfs.datasetProperties.
+   *
+   * Only ZFS *user* properties may be set this way: the name must contain a
+   * ':' and must not use the driver-reserved 'democratic-csi:' namespace.
+   * Values are accepted as strings; numbers and booleans are converted with
+   * String(). Anything else is rejected.
+   *
+   * @param {*} name
+   * @param {*} value
+   * @returns {string} validated value
+   */
+  validateOverlayDatasetProperty(name, value) {
+    if (typeof name !== "string" || !name.includes(":")) {
+      throw new GrpcError(
+        grpc.status.INVALID_ARGUMENT,
+        `invalid zfs dataset property name '${name}' in option overlay: only ZFS user properties (containing ':') may be set via StorageClass parameters or PVC config`
+      );
+    }
+
+    if (name.startsWith("democratic-csi:")) {
+      throw new GrpcError(
+        grpc.status.INVALID_ARGUMENT,
+        `invalid zfs dataset property name '${name}' in option overlay: 'democratic-csi:*' properties are reserved for the driver`
+      );
+    }
+
+    const valueType = typeof value;
+    if (valueType === "string") {
+      return value;
+    }
+
+    if (valueType === "number" || valueType === "boolean") {
+      return String(value);
+    }
+
+    throw new GrpcError(
+      grpc.status.INVALID_ARGUMENT,
+      `invalid zfs dataset property value for '${name}' in option overlay: value must be a string, number, or boolean`
+    );
+  }
+
   getMergedDriverOptions(optionOverlays = []) {
     const driver = this;
-    let driverOptions = Object.assign({}, driver.options);
+    // deep clone so _.set on nested paths (e.g. zfs.*) cannot mutate
+    // driver.options
+    let driverOptions = _.cloneDeep(driver.options);
 
-    const allowedOptionsOverrides = ["zfs.zvolBlocksize"];
+    const allowedOptionsOverrides = ["zfs.zvolBlocksize", "zfs.datasetProperties"];
 
     optionOverlays.forEach((optionOverlay) => {
       allowedOptionsOverrides.forEach((prop) => {
         if (_.has(optionOverlay, prop)) {
           switch (prop) {
+            case "zfs.datasetProperties": {
+              // merge semantics: driver-level properties are the base, each
+              // overlay (StorageClass parameters, then PVC config) adds or
+              // overrides entries in order. Overlay entries are validated;
+              // driver-level entries keep their unrestricted behaviour.
+              const overlayProps = _.get(optionOverlay, prop);
+              if (!_.isPlainObject(overlayProps)) {
+                throw new GrpcError(
+                  grpc.status.INVALID_ARGUMENT,
+                  `option overlay '${prop}' must be an object of property names and values`
+                );
+              }
+
+              if (!driverOptions.zfs) {
+                driverOptions.zfs = {};
+              }
+              if (!driverOptions.zfs.datasetProperties) {
+                driverOptions.zfs.datasetProperties = {};
+              }
+
+              for (const name of Object.keys(overlayProps)) {
+                driverOptions.zfs.datasetProperties[name] =
+                  driver.validateOverlayDatasetProperty(
+                    name,
+                    overlayProps[name]
+                  );
+              }
+              break;
+            }
             // TODO: specific cases can be added here to do merge/replace logic etc
             default:
               driverOptions = _.set(
