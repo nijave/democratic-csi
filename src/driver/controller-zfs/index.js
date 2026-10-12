@@ -882,6 +882,22 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
       }
     }
 
+    // user-supplied properties from option overlays (StorageClass config
+    // parameter, PVC config annotation); applied after
+    // zfs.cloneDatasetProperties values so overlays keep precedence over
+    // copied/set values
+    let overlayProperties = {};
+    if (driverOptions.zfs.datasetPropertiesOverlay) {
+      for (let property in driverOptions.zfs.datasetPropertiesOverlay) {
+        let value = driverOptions.zfs.datasetPropertiesOverlay[property];
+        const template = Handlebars.compile(value);
+
+        overlayProperties[property] = template({
+          parameters: call.request.parameters,
+        });
+      }
+    }
+
     // TODO: add call.request.parameters properties here
 
     volumeProperties[VOLUME_CSI_NAME_PROPERTY_NAME] = name;
@@ -910,6 +926,12 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
     if (volume_content_source) {
       volumeProperties[VOLUME_CONTENT_SOURCE_TYPE_PROPERTY_NAME] =
         volume_content_source.type;
+      // properties for volumes created from a content source
+      // (zfs.cloneDatasetProperties): copied source values + fixed set
+      // values, then option overlays on top; driver-generated properties
+      // (democratic-csi:*, refreservation, ...) cannot collide because
+      // copy/set entries are restricted to non-reserved user properties
+      let cloneVolumeProperties;
       switch (volume_content_source.type) {
         // must be available when adverstising CREATE_DELETE_SNAPSHOT
         // simply clone
@@ -963,6 +985,18 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
             }
           }
 
+          cloneVolumeProperties = Object.assign(
+            {},
+            volumeProperties,
+            await buildCloneDatasetProperties(
+              zb,
+              fullSnapshotName,
+              driverOptions.zfs.cloneDatasetProperties,
+              { parameters: call.request.parameters }
+            ),
+            overlayProperties
+          );
+
           if (detachedClone) {
             try {
               response = await zb.zfs.send_receive(
@@ -972,7 +1006,7 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
                 []
               );
 
-              response = await zb.zfs.set(datasetName, volumeProperties);
+              response = await zb.zfs.set(datasetName, cloneVolumeProperties);
             } catch (err) {
               if (
                 err.toString().includes("destination") &&
@@ -990,14 +1024,14 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
             });
           } else {
             try {
-              // remove readonly/undesired props
-              let cloneProperties = volumeProperties;
-              delete cloneProperties["aclmode"];
-              delete cloneProperties["aclinherit"];
-              delete cloneProperties["acltype"];
-              delete cloneProperties["casesensitivity"];
+              // remove readonly/undesired props (from the copy; the original
+              // volumeProperties stay untouched)
+              delete cloneVolumeProperties["aclmode"];
+              delete cloneVolumeProperties["aclinherit"];
+              delete cloneVolumeProperties["acltype"];
+              delete cloneVolumeProperties["casesensitivity"];
               response = await zb.zfs.clone(fullSnapshotName, datasetName, {
-                properties: volumeProperties,
+                properties: cloneVolumeProperties,
               });
             } catch (err) {
               if (err.toString().includes("dataset does not exist")) {
@@ -1077,6 +1111,18 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
             throw err;
           }
 
+          cloneVolumeProperties = Object.assign(
+            {},
+            volumeProperties,
+            await buildCloneDatasetProperties(
+              zb,
+              fullSnapshotName,
+              driverOptions.zfs.cloneDatasetProperties,
+              { parameters: call.request.parameters }
+            ),
+            overlayProperties
+          );
+
           if (detachedClone) {
             try {
               response = await zb.zfs.send_receive(
@@ -1096,7 +1142,7 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
               }
             }
 
-            response = await zb.zfs.set(datasetName, volumeProperties);
+            response = await zb.zfs.set(datasetName, cloneVolumeProperties);
 
             // remove snapshots from target
             await this.removeSnapshotsFromDatatset(datasetName, {
@@ -1112,15 +1158,15 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
           } else {
             // create clone
             // zfs origin property contains parent info, ie: pool0/k8s/test/PVC-111@clone-test
-            // remove readonly/undesired props
-            let cloneProperties = volumeProperties;
-            delete cloneProperties["aclmode"];
-            delete cloneProperties["aclinherit"];
-            delete cloneProperties["acltype"];
-            delete cloneProperties["casesensitivity"];
+            // remove readonly/undesired props (from the copy; the original
+            // volumeProperties stay untouched)
+            delete cloneVolumeProperties["aclmode"];
+            delete cloneVolumeProperties["aclinherit"];
+            delete cloneVolumeProperties["acltype"];
+            delete cloneVolumeProperties["casesensitivity"];
             try {
               response = await zb.zfs.clone(fullSnapshotName, datasetName, {
-                properties: cloneProperties,
+                properties: cloneVolumeProperties,
               });
             } catch (err) {
               if (err.toString().includes("dataset does not exist")) {
@@ -1141,6 +1187,10 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
           );
       }
     } else {
+      // apply option overlay properties (zfs.cloneDatasetProperties only
+      // applies to volumes created from a content source)
+      Object.assign(volumeProperties, overlayProperties);
+
       // force blocksize on newly created zvols
       if (driverZfsResourceType == "volume") {
         volumeProperties.volblocksize = zvolBlocksize;
@@ -2620,6 +2670,119 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
 }
 
 /**
+ * Select ZFS user properties to copy from a content-source snapshot onto the
+ * new volume.
+ *
+ * Snapshots report their dataset's inheritable properties: a property set
+ * locally (or received) on the source volume shows up on the snapshot with
+ * source "inherited from <the snapshot's own dataset>". Values inherited
+ * from ancestors above the source dataset are skipped (the clone gets those
+ * through normal inheritance anyway), as are default/'-' values and the
+ * driver-reserved 'democratic-csi:*' namespace.
+ *
+ * @param {object} snapshotProperties - property entries of the source
+ *   snapshot as returned by zb.zfs.get: { [property]: { value, received,
+ *   source } }
+ * @param {string[]} patterns - copy entries: exact names, prefix patterns
+ *   ending in '*', or the lone '*'
+ * @param {string} fullSnapshotName - name of the source snapshot
+ * @returns {object} map of property name -> value to copy
+ */
+function selectCopiedDatasetProperties(
+  snapshotProperties,
+  patterns = [],
+  fullSnapshotName
+) {
+  const copied = {};
+  if (!Array.isArray(patterns) || patterns.length === 0) {
+    return copied;
+  }
+
+  const snapshotDatasetName = String(fullSnapshotName).substring(
+    0,
+    String(fullSnapshotName).indexOf("@")
+  );
+
+  for (const [name, entry] of Object.entries(snapshotProperties || {})) {
+    // only ZFS user properties can be copied
+    if (!name.includes(":")) continue;
+    // driver-reserved namespace is never copied, even via a broad pattern
+    if (name.startsWith("democratic-csi:")) continue;
+    if (!entry || typeof entry.value !== "string" || entry.value === "-") {
+      continue;
+    }
+
+    const source = entry.source;
+    const setOnSourceVolume =
+      source === "local" ||
+      source === "received" ||
+      source === `inherited from ${snapshotDatasetName}`;
+    if (!setOnSourceVolume) continue;
+
+    const matches = patterns.some((pattern) => {
+      if (pattern === "*") return true;
+      if (typeof pattern === "string" && pattern.endsWith("*")) {
+        return name.startsWith(pattern.slice(0, -1));
+      }
+      return pattern === name;
+    });
+    if (matches) {
+      copied[name] = entry.value;
+    }
+  }
+
+  return copied;
+}
+
+/**
+ * Compute the user properties to apply to a volume created from a content
+ * source: properties copied from the source snapshot
+ * (zfs.cloneDatasetProperties.copy, read via a single `zfs get all` on the
+ * snapshot — only when a copy list is configured) plus fixed properties
+ * (zfs.cloneDatasetProperties.set, rendered with handlebars like
+ * zfs.datasetProperties).
+ *
+ * @param {object} zb - zetabyte instance
+ * @param {string} fullSnapshotName - source snapshot name (must exist)
+ * @param {object} cloneDatasetProperties - normalized { copy, set }
+ * @param {object} templateContext - handlebars context for set values
+ * @returns {Promise<object>} map of property name -> value
+ */
+async function buildCloneDatasetProperties(
+  zb,
+  fullSnapshotName,
+  cloneDatasetProperties,
+  templateContext = {}
+) {
+  const props = {};
+
+  if (
+    cloneDatasetProperties &&
+    Array.isArray(cloneDatasetProperties.copy) &&
+    cloneDatasetProperties.copy.length > 0
+  ) {
+    const snapshotProperties = await zb.zfs.get(fullSnapshotName, ["all"]);
+    Object.assign(
+      props,
+      selectCopiedDatasetProperties(
+        _.get(snapshotProperties, [fullSnapshotName]),
+        cloneDatasetProperties.copy,
+        fullSnapshotName
+      )
+    );
+  }
+
+  if (cloneDatasetProperties && _.isPlainObject(cloneDatasetProperties.set)) {
+    for (const [name, value] of Object.entries(cloneDatasetProperties.set)) {
+      const template = Handlebars.compile(value);
+      props[name] = template(templateContext);
+    }
+  }
+
+  return props;
+}
+
+/**
  * Whether a dataset has snapshots that should block volume deletion. zfs
  * snapshots inherit user properties from their dataset, so with
  * ignoreForeignSnapshots only snapshots with a local/received property source
@@ -2670,3 +2833,5 @@ async function datasetHasManagedSnapshots(
 
 module.exports.ControllerZfsBaseDriver = ControllerZfsBaseDriver;
 module.exports.datasetHasManagedSnapshots = datasetHasManagedSnapshots;
+module.exports.selectCopiedDatasetProperties = selectCopiedDatasetProperties;
+module.exports.buildCloneDatasetProperties = buildCloneDatasetProperties;
