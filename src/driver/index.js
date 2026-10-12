@@ -472,6 +472,56 @@ class CsiBaseDriver {
   }
 
   /**
+   * Validate a property name (or copy pattern) coming from an option overlay
+   * (StorageClass parameter or PVC config annotation).
+   *
+   * Exact names must be ZFS *user* properties (contain ':') and must not use
+   * the driver-reserved 'democratic-csi:' namespace. When allowPattern is
+   * true (zfs.cloneDatasetProperties copy lists), entries may also be prefix
+   * patterns ending in '*' ("homelab:*") or the lone '*' (every user
+   * property); a pattern whose prefix would match driver-reserved properties
+   * is rejected.
+   *
+   * @param {*} name
+   * @param {object} options
+   * @param {boolean} [options.allowPattern]
+   * @returns {string} validated name
+   */
+  validateOverlayDatasetPropertyName(name, { allowPattern = false } = {}) {
+    const invalidNameMessage = `invalid zfs dataset property name '${name}' in option overlay: only ZFS user properties (containing ':') may be set via StorageClass parameters or PVC config`;
+    const reservedNameMessage = `invalid zfs dataset property name '${name}' in option overlay: 'democratic-csi:*' properties are reserved for the driver`;
+
+    if (typeof name !== "string" || name.length === 0) {
+      throw new GrpcError(grpc.status.INVALID_ARGUMENT, invalidNameMessage);
+    }
+
+    if (allowPattern) {
+      if (name === "*") {
+        return name;
+      }
+      if (name.endsWith("*")) {
+        if (name.slice(0, -1).startsWith("democratic-csi")) {
+          throw new GrpcError(
+            grpc.status.INVALID_ARGUMENT,
+            reservedNameMessage
+          );
+        }
+        return name;
+      }
+    }
+
+    if (!name.includes(":")) {
+      throw new GrpcError(grpc.status.INVALID_ARGUMENT, invalidNameMessage);
+    }
+
+    if (name.startsWith("democratic-csi:")) {
+      throw new GrpcError(grpc.status.INVALID_ARGUMENT, reservedNameMessage);
+    }
+
+    return name;
+  }
+
+  /**
    * Validate a property name/value coming from an option overlay (StorageClass
    * parameter or PVC config annotation) destined for zfs.datasetProperties.
    *
@@ -485,19 +535,7 @@ class CsiBaseDriver {
    * @returns {string} validated value
    */
   validateOverlayDatasetProperty(name, value) {
-    if (typeof name !== "string" || !name.includes(":")) {
-      throw new GrpcError(
-        grpc.status.INVALID_ARGUMENT,
-        `invalid zfs dataset property name '${name}' in option overlay: only ZFS user properties (containing ':') may be set via StorageClass parameters or PVC config`
-      );
-    }
-
-    if (name.startsWith("democratic-csi:")) {
-      throw new GrpcError(
-        grpc.status.INVALID_ARGUMENT,
-        `invalid zfs dataset property name '${name}' in option overlay: 'democratic-csi:*' properties are reserved for the driver`
-      );
-    }
+    this.validateOverlayDatasetPropertyName(name);
 
     const valueType = typeof value;
     if (valueType === "string") {
@@ -514,23 +552,91 @@ class CsiBaseDriver {
     );
   }
 
+  /**
+   * Validate and normalize a zfs.cloneDatasetProperties value (driver-level
+   * config or option overlay).
+   *
+   * Shape: { copy?: (string)[], set?: object }. Copy entries are ZFS user
+   * property names or prefix patterns (see
+   * validateOverlayDatasetPropertyName). Set entries are validated like
+   * datasetProperties overlay entries.
+   *
+   * @param {*} cloneDatasetProperties
+   * @returns {object} normalized { copy: string[], set: object }
+   */
+  validateCloneDatasetProperties(cloneDatasetProperties) {
+    if (!_.isPlainObject(cloneDatasetProperties)) {
+      throw new GrpcError(
+        grpc.status.INVALID_ARGUMENT,
+        `zfs.cloneDatasetProperties must be an object with optional 'copy' (array of ZFS user property names or prefix patterns) and 'set' (object of ZFS user property values)`
+      );
+    }
+
+    for (const key of Object.keys(cloneDatasetProperties)) {
+      if (!["copy", "set"].includes(key)) {
+        throw new GrpcError(
+          grpc.status.INVALID_ARGUMENT,
+          `invalid zfs.cloneDatasetProperties key '${key}': only 'copy' and 'set' are supported`
+        );
+      }
+    }
+
+    const normalized = { copy: [], set: {} };
+
+    if (cloneDatasetProperties.copy !== undefined) {
+      if (!Array.isArray(cloneDatasetProperties.copy)) {
+        throw new GrpcError(
+          grpc.status.INVALID_ARGUMENT,
+          `zfs.cloneDatasetProperties.copy must be an array of ZFS user property names or prefix patterns`
+        );
+      }
+      normalized.copy = cloneDatasetProperties.copy.map((entry) =>
+        this.validateOverlayDatasetPropertyName(entry, { allowPattern: true })
+      );
+    }
+
+    if (cloneDatasetProperties.set !== undefined) {
+      if (!_.isPlainObject(cloneDatasetProperties.set)) {
+        throw new GrpcError(
+          grpc.status.INVALID_ARGUMENT,
+          `zfs.cloneDatasetProperties.set must be an object of ZFS user property names and values`
+        );
+      }
+      for (const name of Object.keys(cloneDatasetProperties.set)) {
+        normalized.set[name] = this.validateOverlayDatasetProperty(
+          name,
+          cloneDatasetProperties.set[name]
+        );
+      }
+    }
+
+    return normalized;
+  }
+
   getMergedDriverOptions(optionOverlays = []) {
     const driver = this;
     // deep clone so _.set on nested paths (e.g. zfs.*) cannot mutate
     // driver.options
     let driverOptions = _.cloneDeep(driver.options);
 
-    const allowedOptionsOverrides = ["zfs.zvolBlocksize", "zfs.datasetProperties"];
+    const allowedOptionsOverrides = [
+      "zfs.zvolBlocksize",
+      "zfs.datasetProperties",
+      "zfs.cloneDatasetProperties",
+    ];
 
     optionOverlays.forEach((optionOverlay) => {
       allowedOptionsOverrides.forEach((prop) => {
         if (_.has(optionOverlay, prop)) {
           switch (prop) {
             case "zfs.datasetProperties": {
-              // merge semantics: driver-level properties are the base, each
-              // overlay (StorageClass parameters, then PVC config) adds or
-              // overrides entries in order. Overlay entries are validated;
-              // driver-level entries keep their unrestricted behaviour.
+              // merge semantics: each overlay (StorageClass parameters, then
+              // PVC config) adds or overrides entries in order. Overlay
+              // entries are validated; driver-level entries keep their
+              // unrestricted behaviour. Overlay entries are tracked in a
+              // separate datasetPropertiesOverlay object so CreateVolume can
+              // slot zfs.cloneDatasetProperties values *between* driver-level
+              // and overlay values in the precedence chain.
               const overlayProps = _.get(optionOverlay, prop);
               if (!_.isPlainObject(overlayProps)) {
                 throw new GrpcError(
@@ -542,17 +648,52 @@ class CsiBaseDriver {
               if (!driverOptions.zfs) {
                 driverOptions.zfs = {};
               }
-              if (!driverOptions.zfs.datasetProperties) {
-                driverOptions.zfs.datasetProperties = {};
+              if (!driverOptions.zfs.datasetPropertiesOverlay) {
+                driverOptions.zfs.datasetPropertiesOverlay = {};
               }
 
               for (const name of Object.keys(overlayProps)) {
-                driverOptions.zfs.datasetProperties[name] =
+                driverOptions.zfs.datasetPropertiesOverlay[name] =
                   driver.validateOverlayDatasetProperty(
                     name,
                     overlayProps[name]
                   );
               }
+              break;
+            }
+            case "zfs.cloneDatasetProperties": {
+              // merge semantics: copy lists are unioned (order preserved,
+              // duplicates removed); set maps merged with later overlays
+              // overriding. Driver-level config is normalized/validated the
+              // same way as overlay values.
+              const overlayClone = _.get(optionOverlay, prop);
+              if (!_.isPlainObject(overlayClone)) {
+                throw new GrpcError(
+                  grpc.status.INVALID_ARGUMENT,
+                  `option overlay '${prop}' must be an object with optional 'copy' and 'set'`
+                );
+              }
+
+              if (!driverOptions.zfs) {
+                driverOptions.zfs = {};
+              }
+
+              const cloneBase = driver.validateCloneDatasetProperties(
+                driverOptions.zfs.cloneDatasetProperties || {}
+              );
+              const cloneOverlay =
+                driver.validateCloneDatasetProperties(overlayClone);
+
+              cloneBase.copy = [
+                ...new Set([...cloneBase.copy, ...cloneOverlay.copy]),
+              ];
+              cloneBase.set = Object.assign(
+                {},
+                cloneBase.set,
+                cloneOverlay.set
+              );
+
+              driverOptions.zfs.cloneDatasetProperties = cloneBase;
               break;
             }
             // TODO: specific cases can be added here to do merge/replace logic etc
@@ -567,6 +708,19 @@ class CsiBaseDriver {
         }
       });
     });
+
+    // driver-level zfs.cloneDatasetProperties is validated/normalized on
+    // every merge (not only when an overlay provides it) so a bad driver
+    // config fails loudly
+    if (
+      _.has(driverOptions, "zfs.cloneDatasetProperties") &&
+      driverOptions.zfs.cloneDatasetProperties !== undefined
+    ) {
+      driverOptions.zfs.cloneDatasetProperties =
+        driver.validateCloneDatasetProperties(
+          driverOptions.zfs.cloneDatasetProperties
+        );
+    }
 
     return driverOptions;
   }

@@ -27,6 +27,20 @@ zfs:
   #  "org.freenas:description": "{{ parameters.[csi.storage.k8s.io/pvc/namespace] }}/{{ parameters.[csi.storage.k8s.io/pvc/name] }}"
   #  "org.freenas:test": "{{ parameters.foo }}"
   #  "org.freenas:test2": "some value"
+  # properties applied only to volumes created from a snapshot or volume
+  # content source (zfs clones / detached send-receive); 'copy' takes user
+  # properties from the source snapshot (exact names or prefix patterns,
+  # '*' = every user property), 'set' fixes values (handlebars templates
+  # supported); 'democratic-csi:*' is reserved and never copied/set;
+  # precedence: datasetProperties < copied values < set < StorageClass/PVC
+  # datasetProperties overlays
+  #cloneDatasetProperties:
+  #  copy:
+  #    - "syncoid:sync"
+  #    - "homelab:*"
+  #  set:
+  #    "syncoid:sync": "false"
+  #    "homelab:sanoid-skip": "true"
   # snapshotProperties:
   #  "org.freenas:key": "value"
 

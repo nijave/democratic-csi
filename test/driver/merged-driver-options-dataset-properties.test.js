@@ -13,7 +13,10 @@ function makeDriver(options) {
 }
 
 describe("getMergedDriverOptions - zfs.datasetProperties overlay", () => {
-  it("merges overlay properties into driver-level properties (overlay wins)", () => {
+  // overlay entries are tracked separately (zfs.datasetPropertiesOverlay) so
+  // zfs.cloneDatasetProperties copies can slot between driver-level and
+  // overlay values in the CreateVolume precedence chain
+  it("merges overlay properties into datasetPropertiesOverlay (overlay wins over driver-level)", () => {
     const driver = makeDriver({
       zfs: {
         datasetProperties: {
@@ -28,17 +31,20 @@ describe("getMergedDriverOptions - zfs.datasetProperties overlay", () => {
 
     assert.deepStrictEqual(merged.zfs.datasetProperties, {
       "homelab:tier": "fast",
+      "homelab:owner": "me",
+    });
+    assert.deepStrictEqual(merged.zfs.datasetPropertiesOverlay, {
       "homelab:owner": "you",
     });
   });
 
-  it("creates datasetProperties when driver-level has none", () => {
+  it("creates datasetPropertiesOverlay when driver-level has none", () => {
     const driver = makeDriver({ zfs: { zvolBlocksize: "16K" } });
     const merged = driver.getMergedDriverOptions([
       { zfs: { datasetProperties: { "homelab:sanoid-skip": "true" } } },
     ]);
 
-    assert.deepStrictEqual(merged.zfs.datasetProperties, {
+    assert.deepStrictEqual(merged.zfs.datasetPropertiesOverlay, {
       "homelab:sanoid-skip": "true",
     });
   });
@@ -50,7 +56,10 @@ describe("getMergedDriverOptions - zfs.datasetProperties overlay", () => {
       { zfs: { datasetProperties: { "homelab:tag": "from-pvc" } } },
     ]);
 
-    assert.strictEqual(merged.zfs.datasetProperties["homelab:tag"], "from-pvc");
+    assert.strictEqual(
+      merged.zfs.datasetPropertiesOverlay["homelab:tag"],
+      "from-pvc"
+    );
   });
 
   it("merges across overlays instead of replacing them", () => {
@@ -60,7 +69,7 @@ describe("getMergedDriverOptions - zfs.datasetProperties overlay", () => {
       { zfs: { datasetProperties: { "homelab:b": "2" } } },
     ]);
 
-    assert.deepStrictEqual(merged.zfs.datasetProperties, {
+    assert.deepStrictEqual(merged.zfs.datasetPropertiesOverlay, {
       "homelab:a": "1",
       "homelab:b": "2",
     });
@@ -76,7 +85,7 @@ describe("getMergedDriverOptions - zfs.datasetProperties overlay", () => {
       },
     ]);
 
-    assert.deepStrictEqual(merged.zfs.datasetProperties, {
+    assert.deepStrictEqual(merged.zfs.datasetPropertiesOverlay, {
       "homelab:count": "42",
       "homelab:enabled": "true",
     });
@@ -138,6 +147,8 @@ describe("getMergedDriverOptions - zfs.datasetProperties overlay", () => {
     assert.deepStrictEqual(merged.zfs.datasetProperties, {
       quota: "10G",
       "homelab:tag": "x",
+    });
+    assert.deepStrictEqual(merged.zfs.datasetPropertiesOverlay, {
       "homelab:new": "y",
     });
   });
