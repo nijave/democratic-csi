@@ -2,6 +2,12 @@ const Client = require("ssh2").Client;
 const { Mutex } = require("async-mutex");
 const GeneralUtils = require("./general");
 
+// Upper bound for a single ssh exec. zfs operations (notably zfs
+// send | receive for detached clones) can be slow, so this is generous; it
+// only exists so an exec that can never complete fails instead of hanging
+// its caller (and the CSI operation lock) forever.
+const DEFAULT_EXEC_TIMEOUT_MS = 15 * 60 * 1000;
+
 class SshClient {
   constructor(options = {}) {
     const client = this;
@@ -198,81 +204,256 @@ class SshClient {
     }
   }
 
-  async _rexec(command, options = {}, stream_proxy = null) {
-    const client = this;
+  /**
+   * Max time in ms a single exec may run before it is rejected and its
+   * channel closed. 0 disables the timeout.
+   *
+   * Order: options.execTimeoutMs, then the SSH_EXEC_TIMEOUT_MS env var, then
+   * DEFAULT_EXEC_TIMEOUT_MS.
+   */
+  getExecTimeoutMs() {
+    const fromOption = this.options.execTimeoutMs;
+    if (Number.isInteger(fromOption) && fromOption >= 0) {
+      return fromOption;
+    }
 
-    // pre-existing async promise executor; left as-is to avoid behavior change
-    // eslint-disable-next-line no-async-promise-executor
-    return new Promise(async (resolve, reject) => {
-      do {
-        try {
-          const conn = await this.connect();
-          conn.exec(command, options, function (err, stream) {
-            if (err) {
-              reject(err);
+    const fromEnv = process.env.SSH_EXEC_TIMEOUT_MS;
+    if (fromEnv !== undefined && /^\d+$/.test(fromEnv)) {
+      return parseInt(fromEnv, 10);
+    }
+
+    return DEFAULT_EXEC_TIMEOUT_MS;
+  }
+
+  /**
+   * Wire an exec channel's output into stdout/stderr buffers and the
+   * optional stream_proxy, and call done({stderr, stdout, code, signal})
+   * when the channel closes. Nothing is forwarded once isSettled() is true.
+   */
+  _handleExecStream(stream, stream_proxy, isSettled, done) {
+    const client = this;
+    let stderr;
+    let stdout;
+
+    stream
+      .on("close", function (code, signal) {
+        client.debug(
+          "Stream :: close :: code: " + code + ", signal: " + signal
+        );
+        if (isSettled()) {
+          return;
+        }
+        done({ stderr, stdout, code, signal });
+        if (stream_proxy) {
+          stream_proxy.emit("close", ...arguments);
+        }
+      })
+      .on("data", function (data) {
+        client.debug("STDOUT: " + data);
+        if (isSettled()) {
+          return;
+        }
+        if (stream_proxy) {
+          stream_proxy.stdout.emit("data", ...arguments);
+        }
+        if (stdout == undefined) {
+          stdout = "";
+        }
+        stdout = stdout.concat(data);
+      })
+      .stderr.on("data", function (data) {
+        client.debug("STDERR: " + data);
+        if (isSettled()) {
+          return;
+        }
+        if (stream_proxy) {
+          stream_proxy.stderr.emit("data", ...arguments);
+        }
+        if (stderr == undefined) {
+          stderr = "";
+        }
+        stderr = stderr.concat(data);
+      });
+  }
+
+  _execTimeoutError(timeoutMs, command) {
+    const err = new Error(
+      `ssh exec timed out after ${timeoutMs}ms: ${command}`
+    );
+    err.code = "ETIMEDOUT";
+    return err;
+  }
+
+  /**
+   * exec over the shared connection.
+   *
+   * The returned promise settles exactly once: when the channel closes, when
+   * the exec request fails, when the shared connection ends/closes while the
+   * exec is in flight, or when the exec timeout fires (the channel is then
+   * destroyed). The remote process may keep running after a timeout or a
+   * dropped connection, as with any ssh session without a pty.
+   */
+  _rexec(command, options = {}, stream_proxy = null) {
+    const client = this;
+    const timeoutMs = this.getExecTimeoutMs();
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer;
+      let conn;
+      let stream;
+
+      const onConnEnd = () =>
+        settle(
+          new Error(`ssh connection ended while exec in flight: ${command}`)
+        );
+      const onConnClose = () =>
+        settle(
+          new Error(`ssh connection closed while exec in flight: ${command}`)
+        );
+      const detachConn = () => {
+        if (conn) {
+          conn.removeListener("end", onConnEnd);
+          conn.removeListener("close", onConnClose);
+        }
+      };
+      const settle = (err, result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        detachConn();
+        if (err) {
+          reject(err);
+        } else {
+          resolve(result);
+        }
+      };
+
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          settle(client._execTimeoutError(timeoutMs, command));
+          if (stream) {
+            try {
+              stream.destroy();
+            } catch {}
+          }
+        }, timeoutMs);
+      }
+
+      const onExec = (err, s) => {
+        if (err) {
+          settle(err);
+          return;
+        }
+        stream = s;
+        if (settled) {
+          // timed out (or connection dropped) while the channel was opening
+          try {
+            s.destroy();
+          } catch {}
+          return;
+        }
+
+        if (stream_proxy) {
+          stream_proxy.on("kill", () => {
+            s.destroy();
+          });
+        }
+
+        client._handleExecStream(
+          s,
+          stream_proxy,
+          () => settled,
+          (result) => settle(null, result)
+        );
+      };
+
+      (async () => {
+        while (!settled) {
+          try {
+            conn = await client.connect();
+          } catch (err) {
+            settle(err);
+            return;
+          }
+          if (settled) {
+            return;
+          }
+
+          conn.on("end", onConnEnd);
+          conn.on("close", onConnClose);
+          try {
+            conn.exec(command, options, onExec);
+            return;
+          } catch (err) {
+            detachConn();
+            if (!(
+              err &&
+              err.message &&
+              err.message.includes("Not connected")
+            )) {
+              settle(err);
               return;
             }
-            let stderr;
-            let stdout;
-
-            if (stream_proxy) {
-              stream_proxy.on("kill", (signal) => {
-                stream.destroy();
-              });
-            }
-
-            stream
-              .on("close", function (code, signal) {
-                client.debug(
-                  "Stream :: close :: code: " + code + ", signal: " + signal
-                );
-                if (stream_proxy) {
-                  stream_proxy.emit("close", ...arguments);
-                }
-                resolve({ stderr, stdout, code, signal });
-                //conn.end();
-              })
-              .on("data", function (data) {
-                client.debug("STDOUT: " + data);
-                if (stream_proxy) {
-                  stream_proxy.stdout.emit("data", ...arguments);
-                }
-                if (stdout == undefined) {
-                  stdout = "";
-                }
-                stdout = stdout.concat(data);
-              })
-              .stderr.on("data", function (data) {
-                client.debug("STDERR: " + data);
-                if (stream_proxy) {
-                  stream_proxy.stderr.emit("data", ...arguments);
-                }
-                if (stderr == undefined) {
-                  stderr = "";
-                }
-                stderr = stderr.concat(data);
-              });
-          });
-          break;
-        } catch (err) {
-          if (err.message && !err.message.includes("Not connected")) {
-            throw err;
           }
+          // conn_state said ready but the socket is no longer writable; mark
+          // it dead so the next connect() replaces it, then retry (bounded by
+          // the exec timeout)
+          if (client.conn === conn && client.conn_state == "ready") {
+            client.conn_state = "closed";
+          }
+          await GeneralUtils.sleep(1000);
         }
-        await GeneralUtils.sleep(1000);
-      } while (true);
+      })().catch((err) => settle(err));
     });
   }
 
-  async _nexec(command, options = {}, stream_proxy = null) {
+  /**
+   * exec over a dedicated connection that is closed afterwards.
+   * Same settle-once and timeout semantics as _rexec.
+   */
+  _nexec(command, options = {}, stream_proxy = null) {
     const client = this;
+    const timeoutMs = this.getExecTimeoutMs();
+
     return new Promise((resolve, reject) => {
-      var conn = new Client();
+      const conn = new Client();
+      let settled = false;
+      let timer;
+
+      const settle = (err, result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        if (err) {
+          reject(err);
+        } else {
+          resolve(result);
+        }
+        try {
+          conn.end();
+        } catch {}
+      };
+
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          settle(client._execTimeoutError(timeoutMs, command));
+        }, timeoutMs);
+      }
 
       conn
         .on("error", function (err) {
           client.debug("Client :: error");
-          reject(err);
+          settle(err);
+        })
+        .on("close", function () {
+          settle(
+            new Error(`ssh connection closed before exec completed: ${command}`)
+          );
         })
         .on("ready", function () {
           client.debug("Client :: ready");
@@ -280,50 +461,35 @@ class SshClient {
           //options.env = {
           //  TERM: "",
           //};
-          conn.exec(command, options, function (err, stream) {
-            if (err) {
-              reject(err);
-              return;
-            }
-            let stderr;
-            let stdout;
-            stream
-              .on("close", function (code, signal) {
-                client.debug(
-                  "Stream :: close :: code: " + code + ", signal: " + signal
-                );
-                if (stream_proxy) {
-                  stream_proxy.emit("close", ...arguments);
-                }
-                resolve({ stderr, stdout, code, signal });
-                conn.end();
-              })
-              .on("data", function (data) {
-                client.debug("STDOUT: " + data);
-                if (stream_proxy) {
-                  stream_proxy.stdout.emit("data", ...arguments);
-                }
-                if (stdout == undefined) {
-                  stdout = "";
-                }
-                stdout = stdout.concat(data);
-              })
-              .stderr.on("data", function (data) {
-                client.debug("STDERR: " + data);
-                if (stream_proxy) {
-                  stream_proxy.stderr.emit("data", ...arguments);
-                }
-                if (stderr == undefined) {
-                  stderr = "";
-                }
-                stderr = stderr.concat(data);
-              });
-          });
-        })
-        .connect(client.options.connection);
+          try {
+            conn.exec(command, options, function (err, stream) {
+              if (err) {
+                settle(err);
+                return;
+              }
+              if (settled) {
+                return;
+              }
+              client._handleExecStream(
+                stream,
+                stream_proxy,
+                () => settled,
+                (result) => settle(null, result)
+              );
+            });
+          } catch (err) {
+            settle(err);
+          }
+        });
+
+      try {
+        conn.connect(client.options.connection);
+      } catch (err) {
+        settle(err);
+      }
 
       if (stream_proxy) {
-        stream_proxy.on("kill", (signal) => {
+        stream_proxy.on("kill", () => {
           conn.end();
         });
       }

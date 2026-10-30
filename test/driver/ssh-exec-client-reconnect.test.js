@@ -37,6 +37,9 @@ function startServer(onExec) {
           const stream = acceptExec();
           state.execStreams.add(stream);
           stream.on("close", () => state.execStreams.delete(stream));
+          // drain stdin so the channel can reach 'close' when the client
+          // closes it
+          stream.resume();
           onExec(info, stream);
         });
       });
@@ -114,7 +117,7 @@ function waitForEvent(emitter, name) {
   return new Promise((resolve) => emitter.once(name, resolve));
 }
 
-describe("SshClient reconnect", () => {
+describe("SshClient reconnect and exec timeouts", () => {
   let server;
   let client;
 
@@ -173,5 +176,103 @@ describe("SshClient reconnect", () => {
       Array.from({ length: 16 }, (_, i) => client.exec(`echo ${i}`))
     );
     assert.strictEqual(server.connections, 1);
+  });
+
+  it("rejects and closes the channel when an exec exceeds the timeout", async () => {
+    // never reply
+    server = await startServer(() => {});
+    client = newClient(server.port, { execTimeoutMs: 300 });
+
+    const proxyEvents = [];
+    const { EventEmitter } = require("node:events");
+    const proxy = new EventEmitter();
+    proxy.stdout = new EventEmitter();
+    proxy.stderr = new EventEmitter();
+    proxy.on("close", () => proxyEvents.push("close"));
+
+    const result = await settleWithin(
+      client.exec("sleep 999", {}, proxy),
+      5000
+    );
+    assert.strictEqual(result.status, "rejected");
+    assert.match(result.reason.message, /timed out after 300ms/);
+    assert.strictEqual(result.reason.code, "ETIMEDOUT");
+
+    // the client destroyed the channel, so the server sees it close
+    const deadline = Date.now() + 2000;
+    while (server.execStreams.size > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.strictEqual(server.execStreams.size, 0);
+    // the late stream close must not be proxied after the promise settled
+    assert.deepStrictEqual(proxyEvents, []);
+
+    // the shared connection is still usable afterwards
+    assert.strictEqual(client.conn_state, "ready");
+  });
+
+  it("rejects an in-flight exec when the connection closes underneath it", async () => {
+    server = await startServer(() => {});
+    client = newClient(server.port, { execTimeoutMs: 0 });
+
+    await client.connect();
+    const pending = settleWithin(client.exec("sleep 999"), 5000);
+    // let the channel open on the server
+    const deadline = Date.now() + 2000;
+    while (server.execStreams.size === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    server.dropAll();
+
+    const result = await pending;
+    assert.strictEqual(result.status, "rejected");
+    assert.match(result.reason.message, /connection (closed|ended)/);
+  });
+
+  it("rejects (instead of hanging) when the connection cannot be made", async () => {
+    // grab a free port, then close the server so nothing listens on it
+    server = await startServer(() => {});
+    const port = server.port;
+    await server.close();
+    server = null;
+    client = newClient(port, { execTimeoutMs: 0 });
+
+    const result = await settleWithin(client.exec("true"), 5000);
+    assert.strictEqual(result.status, "rejected");
+    assert.match(String(result.reason), /ECONNREFUSED/);
+  });
+
+  it("times out a non-reused connection exec", async () => {
+    server = await startServer(() => {});
+    client = newClient(server.port, { execTimeoutMs: 300 });
+
+    const result = await settleWithin(client._nexec("sleep 999"), 5000);
+    assert.strictEqual(result.status, "rejected");
+    assert.match(result.reason.message, /timed out after 300ms/);
+  });
+
+  it("reads the exec timeout from SSH_EXEC_TIMEOUT_MS", () => {
+    const prev = process.env.SSH_EXEC_TIMEOUT_MS;
+    try {
+      delete process.env.SSH_EXEC_TIMEOUT_MS;
+      assert.strictEqual(newClient(1).getExecTimeoutMs(), 15 * 60 * 1000);
+      process.env.SSH_EXEC_TIMEOUT_MS = "1234";
+      assert.strictEqual(newClient(1).getExecTimeoutMs(), 1234);
+      process.env.SSH_EXEC_TIMEOUT_MS = "0";
+      assert.strictEqual(newClient(1).getExecTimeoutMs(), 0);
+      process.env.SSH_EXEC_TIMEOUT_MS = "bogus";
+      assert.strictEqual(newClient(1).getExecTimeoutMs(), 15 * 60 * 1000);
+      // explicit option wins
+      assert.strictEqual(
+        newClient(1, { execTimeoutMs: 5 }).getExecTimeoutMs(),
+        5
+      );
+    } finally {
+      if (prev === undefined) {
+        delete process.env.SSH_EXEC_TIMEOUT_MS;
+      } else {
+        process.env.SSH_EXEC_TIMEOUT_MS = prev;
+      }
+    }
   });
 });
