@@ -1,5 +1,5 @@
 const Client = require("ssh2").Client;
-const { E_CANCELED, Mutex } = require("async-mutex");
+const { Mutex } = require("async-mutex");
 const GeneralUtils = require("./general");
 
 class SshClient {
@@ -30,28 +30,49 @@ class SshClient {
     this.ready_event_count = 0;
     this.error_event_count = 0;
 
-    this.conn = new Client();
+    // A fresh ssh2 Client is created for every (re)connect; see _connect().
+    this.conn = null;
+  }
+
+  /**
+   * Create a new ssh2 Client and wire up state tracking.
+   *
+   * Events from a client that has since been replaced only update
+   * this.conn_state while it is still the current client, so a late
+   * 'close' from an old connection cannot mark the new one as closed.
+   */
+  _createConnection() {
+    const conn = new Client();
+    // every in-flight exec attaches end/close listeners; a burst of
+    // concurrent calls would otherwise trip MaxListenersExceededWarning
+    conn.setMaxListeners(0);
+    const isCurrent = () => this.conn === conn;
+
     // invoked before close
-    this.conn.on("end", () => {
-      this.conn_state = "ended";
+    conn.on("end", () => {
+      if (isCurrent()) this.conn_state = "ended";
       this.debug("Client :: end");
     });
     // invoked after end
-    this.conn.on("close", () => {
-      this.conn_state = "closed";
+    conn.on("close", () => {
+      if (isCurrent()) this.conn_state = "closed";
       this.debug("Client :: close");
     });
-    this.conn.on("error", (err) => {
-      this.conn_state = "error";
-      this.conn_err = err;
+    conn.on("error", (err) => {
+      if (isCurrent()) {
+        this.conn_state = "error";
+        this.conn_err = err;
+      }
       this.error_event_count++;
       this.debug("Client :: error");
     });
-    this.conn.on("ready", () => {
-      this.conn_state = "ready";
+    conn.on("ready", () => {
+      if (isCurrent()) this.conn_state = "ready";
       this.ready_event_count++;
       this.debug("Client :: ready");
     });
+
+    return conn;
   }
 
   /**
@@ -76,35 +97,93 @@ class SshClient {
     this.logger.silly(...arguments);
   }
 
+  /**
+   * (Re)connect under conn_mutex and return a ready ssh2 Client.
+   *
+   * Callers that queued on the mutex while another caller reconnected see
+   * the ready state on entry and return the existing client instead of
+   * reconnecting again.
+   *
+   * We never call connect() on an existing Client. In ssh2 (1.17.0) calling
+   * connect() on a client whose socket is still open does
+   * `this.once('close', () => this.connect(cfg)); this.end()`. The socket
+   * 'close' handler emits 'close' (re-entering connect(), which replaces
+   * this._chanMgr) before it runs `this._chanMgr.cleanup(err)`, so cleanup
+   * runs on the new, empty channel manager and every in-flight exec channel
+   * of the old connection is orphaned: its callback and stream 'close'
+   * never fire. A new Client per connection keeps the old client's cleanup
+   * on its own channel manager, which errors its channels out.
+   */
   async _connect() {
-    const start_ready_event_count = this.ready_event_count;
-    const start_error_event_count = this.error_event_count;
-    try {
-      await this.conn_mutex.runExclusive(async () => {
-        this.conn.connect(this.options.connection);
-        do {
-          if (start_error_event_count != this.error_event_count) {
-            throw this.conn_err;
-          }
-
-          if (start_ready_event_count != this.ready_event_count) {
-            break;
-          }
-
-          await GeneralUtils.sleep(100);
-        } while (true);
-      });
-    } catch (err) {
-      if (err === E_CANCELED) {
-        return;
+    return this.conn_mutex.runExclusive(async () => {
+      if (this.conn && this.conn_state == "ready") {
+        return this.conn;
       }
-      throw err;
-    }
+
+      // tear down whatever is left of the previous connection; ending it
+      // makes ssh2 fail its outstanding channels instead of leaking them
+      const previous = this.conn;
+      if (previous) {
+        try {
+          previous.end();
+        } catch {}
+      }
+
+      const conn = this._createConnection();
+      this.conn = conn;
+      this.conn_state = "connecting";
+      this.conn_err = undefined;
+
+      try {
+        await new Promise((resolve, reject) => {
+          const cleanup = () => {
+            conn.removeListener("ready", onReady);
+            conn.removeListener("error", onError);
+            conn.removeListener("close", onClose);
+          };
+          const onReady = () => {
+            cleanup();
+            resolve();
+          };
+          const onError = (err) => {
+            cleanup();
+            reject(err);
+          };
+          const onClose = () => {
+            cleanup();
+            reject(new Error("ssh connection closed before ready"));
+          };
+          conn.once("ready", onReady);
+          conn.once("error", onError);
+          conn.once("close", onClose);
+          try {
+            conn.connect(this.options.connection);
+          } catch (err) {
+            cleanup();
+            reject(err);
+          }
+        });
+      } catch (err) {
+        if (this.conn === conn) {
+          this.conn_state = "error";
+          this.conn_err = err;
+        }
+        try {
+          conn.end();
+        } catch {}
+        throw err;
+      }
+
+      return conn;
+    });
   }
 
+  /**
+   * Return a ready ssh2 Client, connecting if needed.
+   */
   async connect() {
-    if (this.conn_state == "ready") {
-      return;
+    if (this.conn && this.conn_state == "ready") {
+      return this.conn;
     }
 
     return this._connect();
@@ -121,14 +200,13 @@ class SshClient {
 
   async _rexec(command, options = {}, stream_proxy = null) {
     const client = this;
-    const conn = this.conn;
 
     // pre-existing async promise executor; left as-is to avoid behavior change
     // eslint-disable-next-line no-async-promise-executor
     return new Promise(async (resolve, reject) => {
       do {
         try {
-          await this.connect();
+          const conn = await this.connect();
           conn.exec(command, options, function (err, stream) {
             if (err) {
               reject(err);
