@@ -209,7 +209,10 @@ if (args.csiMode.includes("node")) {
 // ie: snapshot operations can lock volumes delete, but different pods may be
 // leader for each respectively)
 // having said that, it should be very effective as is
-let operationLock = new Set();
+// keys held longer than OPERATION_LOCK_MAX_HOLD_MS are evicted on the next
+// conflicting request; see src/utils/operation_lock.js
+const { OperationLock } = require("../src/utils/operation_lock");
+let operationLock = new OperationLock({ logger });
 
 async function requestHandlerProxy(call, callback, serviceMethodName) {
   const cleansedCall = JSON.parse(stringify(call));
@@ -236,50 +239,44 @@ async function requestHandlerProxy(call, callback, serviceMethodName) {
     );
 
     const lockKeys = GeneralUtils.lockKeysFromRequest(call, serviceMethodName);
+    let lockToken = null;
     if (lockKeys.length > 0) {
       logger.debug("operation lock keys: %j", lockKeys);
-      // check locks
-      lockKeys.forEach((key) => {
-        if (operationLock.has(key)) {
-          throw new GrpcError(
-            grpc.status.ABORTED,
-            "operation locked due to in progress operation(s): " +
-              JSON.stringify(lockKeys)
-          );
-        }
-      });
-    }
-
-    // for testing purposes
-    //await GeneralUtils.sleep(10000);
-    //throw new Error("fake error");
-
-    // for CI/testing purposes
-    if (["NodePublishVolume", "NodeStageVolume"].includes(serviceMethodName)) {
-      await driver.setVolumeContextCache(
-        call.request.volume_id,
-        call.request.volume_context
-      );
+      // check and acquire locks atomically (no await in between)
+      lockToken = operationLock.acquire(lockKeys, serviceMethodName);
+      if (lockToken === null) {
+        throw new GrpcError(
+          grpc.status.ABORTED,
+          "operation locked due to in progress operation(s): " +
+            JSON.stringify(lockKeys)
+        );
+      }
     }
 
     let response;
     let responseError;
     try {
-      // aquire locks
-      if (lockKeys.length > 0) {
-        lockKeys.forEach((key) => {
-          operationLock.add(key);
-        });
+      // for testing purposes
+      //await GeneralUtils.sleep(10000);
+      //throw new Error("fake error");
+
+      // for CI/testing purposes
+      if (
+        ["NodePublishVolume", "NodeStageVolume"].includes(serviceMethodName)
+      ) {
+        await driver.setVolumeContextCache(
+          call.request.volume_id,
+          call.request.volume_context
+        );
       }
+
       response = await driver[serviceMethodName](call);
     } catch (e) {
       responseError = e;
     } finally {
-      // release locks
-      if (lockKeys.length > 0) {
-        lockKeys.forEach((key) => {
-          operationLock.delete(key);
-        });
+      // release locks; only keys this request still holds are removed
+      if (lockToken !== null) {
+        operationLock.release(lockKeys, lockToken);
       }
     }
 
