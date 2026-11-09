@@ -102,6 +102,24 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
         "EXPAND_VOLUME",
       ];
 
+      // Advertise attach/detach for the block protocols so that
+      // external-provisioner refuses DeleteVolume while a VolumeAttachment
+      // still exists. Without this, DeleteVolume can run while kubelet is
+      // still inside NodeUnstageVolume, deleting the iscsi target / nvme
+      // subsystem under a live session.
+      // https://github.com/democratic-csi/democratic-csi/issues/572
+      // The RPCs themselves are intentional no-ops, see
+      // ControllerPublishVolume / ControllerUnpublishVolume.
+      if (
+        ["zfs-generic-iscsi", "zfs-generic-nvmeof"].includes(
+          this.options.driver
+        )
+      ) {
+        options.service.controller.capabilities.rpc.push(
+          "PUBLISH_UNPUBLISH_VOLUME"
+        );
+      }
+
       if (semver.satisfies(this.ctx.csiVersion, ">=1.3.0")) {
         options.service.controller.capabilities.rpc.push(
           //"VOLUME_CONDITION",
@@ -1548,6 +1566,124 @@ class ControllerZfsBaseDriver extends CsiBaseDriver {
       throw err;
     }
 
+    return {};
+  }
+
+  /**
+   * Intentional no-op: no storage-side attach happens for these drivers.
+   * The RPC exists only so that PUBLISH_UNPUBLISH_VOLUME is advertised,
+   * making external-provisioner wait for external-attacher (i.e. for
+   * kubelet's NodeUnstageVolume to complete and the VolumeAttachment to be
+   * deleted) before running DeleteVolume. Otherwise the iscsi target / nvme
+   * subsystem may be deleted under a live session.
+   * https://github.com/democratic-csi/democratic-csi/issues/572
+   *
+   * @param {*} call
+   */
+  async ControllerPublishVolume(call) {
+    const driver = this;
+
+    if (
+      !driver.options.service.controller.capabilities.rpc.includes(
+        "PUBLISH_UNPUBLISH_VOLUME"
+      )
+    ) {
+      throw new GrpcError(
+        grpc.status.UNIMPLEMENTED,
+        `driver does not advertise PUBLISH_UNPUBLISH_VOLUME`
+      );
+    }
+
+    let datasetParentName = this.getVolumeParentDatasetName();
+    let name = call.request.volume_id;
+
+    if (!datasetParentName) {
+      throw new GrpcError(
+        grpc.status.FAILED_PRECONDITION,
+        `invalid configuration: missing datasetParentName`
+      );
+    }
+
+    if (!name) {
+      throw new GrpcError(
+        grpc.status.INVALID_ARGUMENT,
+        `volume_id is required`
+      );
+    }
+
+    driver.validateVolumeId(name);
+
+    if (!call.request.node_id) {
+      throw new GrpcError(
+        grpc.status.INVALID_ARGUMENT,
+        `node_id is required`
+      );
+    }
+
+    if (!call.request.volume_capability) {
+      throw new GrpcError(
+        grpc.status.INVALID_ARGUMENT,
+        `volume_capability is required`
+      );
+    }
+
+    const zb = await this.getZetabyte();
+    const datasetName = datasetParentName + "/" + name;
+
+    // the volume must exist; node existence is intentionally not verified
+    // and `readonly` is intentionally ignored
+    try {
+      await zb.zfs.get(datasetName, ["name"]);
+    } catch (err) {
+      if (err.toString().includes("dataset does not exist")) {
+        throw new GrpcError(
+          grpc.status.NOT_FOUND,
+          `volume_id ${name} does not exist`
+        );
+      }
+
+      throw err;
+    }
+
+    return { publish_context: {} };
+  }
+
+  /**
+   * Intentional no-op: no storage-side detach happens for these drivers.
+   * The RPC exists only so that PUBLISH_UNPUBLISH_VOLUME is advertised;
+   * see ControllerPublishVolume for why that ordering matters.
+   * Always idempotent (even if the dataset is already gone) so it can never
+   * block VolumeAttachment cleanup and thus DeleteVolume.
+   * https://github.com/democratic-csi/democratic-csi/issues/572
+   *
+   * @param {*} call
+   */
+  async ControllerUnpublishVolume(call) {
+    const driver = this;
+
+    if (
+      !driver.options.service.controller.capabilities.rpc.includes(
+        "PUBLISH_UNPUBLISH_VOLUME"
+      )
+    ) {
+      throw new GrpcError(
+        grpc.status.UNIMPLEMENTED,
+        `driver does not advertise PUBLISH_UNPUBLISH_VOLUME`
+      );
+    }
+
+    let name = call.request.volume_id;
+
+    if (!name) {
+      throw new GrpcError(
+        grpc.status.INVALID_ARGUMENT,
+        `volume_id is required`
+      );
+    }
+
+    driver.validateVolumeId(name);
+
+    // no storage-side work; node_id may be empty (unpublish from all nodes)
     return {};
   }
 
